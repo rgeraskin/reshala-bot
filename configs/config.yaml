@@ -1,0 +1,37 @@
+telegram:
+  token: ${TELEGRAM_BOT_TOKEN}
+  # Whitelist of allowed user IDs and/or chat IDs (always enforced)
+  allowed_chat_ids:
+    - "123456789" # Example: User ID
+    # - "-1001234567890" # Example: Group ID (negative for groups/supergroups)
+
+claude:
+  # Path to the Claude CLI binary used to execute sessions.
+  cli_path: /usr/local/bin/claude-code
+  # Absolute path to the project Claude should operate on (used as working directory/context).
+  project_path: /Users/user/Projects/work/claude
+  # Per-query execution timeout for Claude requests.
+  query_timeout: 5m
+  # Maximum number of Claude sessions allowed to run concurrently.
+  max_concurrent_sessions: 20
+
+context:
+  # How long an interaction context is kept before it expires.
+  ttl: 2h
+  # How often the cleanup job runs to remove expired context entries.
+  cleanup_interval: 240h
+  # When enabled, validates context state/ownership before use.
+  validation_enabled: true
+
+storage:
+  db_path: ./data/bot.db
+
+security:
+  secret_patterns:
+    - api[_-]?key[s]?\s*[:=]\s*["']?([^"'\s]+)
+    - token[s]?\s*[:=]\s*["']?([^"'\s]+)
+    - password[s]?\s*[:=]\s*["']?([^"'\s]+)
+    - secret[s]?\s*[:=]\s*["']?([^"'\s]+)
+    - "[A-Za-z0-9+/]{40,}={0,2}"
+    - xox[pboa]-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[a-z0-9]{32}
+    - eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+

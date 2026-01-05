@@ -1,0 +1,48 @@
+# Binaries
+/bot
+/worker
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependencies
+/vendor/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Environment files
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data directories
+/data/
+/logs/
+
+# Build artifacts
+/dist/
+/build/
+configs/config.local.yaml
