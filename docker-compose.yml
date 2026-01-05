@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aiops-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - CONFIG_PATH=/app/configs/config.yaml
+
+      # Optional: Override config values
+      # - ARGOCD_API_TOKEN=${ARGOCD_API_TOKEN}
+      # - GITHUB_TOKEN=${GITHUB_TOKEN}
+      # - JIRA_TOKEN=${JIRA_TOKEN}
+      # - SLACK_TOKEN=${SLACK_TOKEN}
+      # - DD_API_KEY=${DD_API_KEY}
+      # - DD_APP_KEY=${DD_APP_KEY}
+    volumes:
+      # Persistent database
+      - ./bot-data:/data
+
+      # Mount Claude workspace (read-only)
+      - ${CLAUDE_WORKSPACE_PATH}:/workspace:ro
+
+      # Optional: Override config
+      # - ./configs/config.yaml:/app/configs/config.yaml:ro
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

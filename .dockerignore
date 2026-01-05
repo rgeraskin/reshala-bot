@@ -1,0 +1,58 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Documentation
+README.md
+*.md
+
+# Build artifacts
+bot
+worker
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+*.test
+
+# Data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment
+.env
+.env.*
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Dependencies (will be downloaded during build)
+vendor/
