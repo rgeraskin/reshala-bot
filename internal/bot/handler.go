@@ -71,6 +71,14 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			"🚫 Access denied. This bot is restricted to authorized users only.")
 	}
 
+	// Validate input size to prevent DoS
+	const maxQuerySize = 10000
+	if len(msg.Text) > maxQuerySize {
+		slog.Warn("Query too large", "chat_id", msg.ChatID, "size", len(msg.Text), "max", maxQuerySize)
+		return h.platform.SendMessage(msg.ChatID,
+			fmt.Sprintf("Message too long (%d characters). Maximum is %d characters.", len(msg.Text), maxQuerySize))
+	}
+
 	// Check for slash commands
 	if strings.HasPrefix(msg.Text, "/") {
 		cmd := strings.Fields(msg.Text)[0] // Extract command
