@@ -108,6 +108,14 @@ func main() {
 	)
 	slog.Info("Bot handler initialized", "allowed_chats", len(cfg.Telegram.AllowedChatIDs))
 
+	// Initialize middleware with rate limiting (10 requests per minute per chat)
+	middleware := bot.NewMiddleware(10, time.Minute)
+	middleware.StartCleanupWorker()
+	slog.Info("Middleware initialized", "rate_limit", "10/min")
+
+	// Wrap handler with middleware chain: Logger -> RateLimit -> Handler
+	wrappedHandler := middleware.Logger(middleware.RateLimit(handler.HandleMessage))
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -119,8 +127,9 @@ func main() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
-		// Cancel expiry worker
+		// Cancel expiry worker and middleware
 		cancelWorker()
+		middleware.Stop()
 
 		activeCount := sessionManager.GetActiveSessionCount()
 		slog.Info("Waiting for active sessions to complete", "count", activeCount, "timeout", "30s")
@@ -160,7 +169,7 @@ func main() {
 
 	slog.Info("Bot is ready to receive messages")
 
-	if err := platform.Start(handler.HandleMessage); err != nil {
+	if err := platform.Start(wrappedHandler); err != nil {
 		slog.Error("Bot stopped with error", "error", err)
 		os.Exit(1)
 	}

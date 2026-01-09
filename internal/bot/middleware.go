@@ -1,7 +1,8 @@
 package bot
 
 import (
-	"log"
+	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -78,18 +79,24 @@ func (rl *RateLimiter) Cleanup() {
 
 type Middleware struct {
 	rateLimiter *RateLimiter
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 func NewMiddleware(rateLimit int, window time.Duration) *Middleware {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Middleware{
 		rateLimiter: NewRateLimiter(rateLimit, window),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
 func (m *Middleware) RateLimit(handler messaging.MessageHandler) messaging.MessageHandler {
 	return func(msg *messaging.IncomingMessage) error {
 		if !m.rateLimiter.Allow(msg.ChatID) {
-			log.Printf("Rate limit exceeded for chat %s", msg.ChatID)
+			slog.Warn("Rate limit exceeded", "chat_id", msg.ChatID)
 			return nil
 		}
 		return handler(msg)
@@ -103,9 +110,9 @@ func (m *Middleware) Logger(handler messaging.MessageHandler) messaging.MessageH
 		duration := time.Since(start)
 
 		if err != nil {
-			log.Printf("[%s] Error after %v: %v", msg.ChatID, duration, err)
+			slog.Error("Request failed", "chat_id", msg.ChatID, "duration", duration, "error", err)
 		} else {
-			log.Printf("[%s] Success in %v", msg.ChatID, duration)
+			slog.Info("Request completed", "chat_id", msg.ChatID, "duration", duration)
 		}
 
 		return err
@@ -113,12 +120,25 @@ func (m *Middleware) Logger(handler messaging.MessageHandler) messaging.MessageH
 }
 
 func (m *Middleware) StartCleanupWorker() {
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			m.rateLimiter.Cleanup()
+		for {
+			select {
+			case <-ticker.C:
+				m.rateLimiter.Cleanup()
+			case <-m.ctx.Done():
+				return
+			}
 		}
 	}()
+}
+
+// Stop gracefully shuts down the middleware cleanup worker.
+func (m *Middleware) Stop() {
+	m.cancel()
+	m.wg.Wait()
 }
