@@ -18,8 +18,10 @@ type Config struct {
 }
 
 type TelegramConfig struct {
-	Token          string   `yaml:"token"`
-	AllowedChatIDs []string `yaml:"allowed_chat_ids"`
+	Token          string        `yaml:"token"`
+	AllowedChatIDs []string      `yaml:"allowed_chat_ids"`
+	RateLimit      int           `yaml:"rate_limit"`
+	RateWindow     time.Duration `yaml:"rate_window"`
 }
 
 type ClaudeConfig struct {
@@ -78,6 +80,13 @@ func (c *Config) validate() error {
 	if len(c.Telegram.AllowedChatIDs) == 0 {
 		return fmt.Errorf("telegram.allowed_chat_ids is required (at least one user or chat ID)")
 	}
+	// Apply defaults for rate limiting
+	if c.Telegram.RateLimit <= 0 {
+		c.Telegram.RateLimit = 10 // Default: 10 requests per window
+	}
+	if c.Telegram.RateWindow <= 0 {
+		c.Telegram.RateWindow = time.Minute // Default: 1 minute window
+	}
 	if c.Claude.CLIPath == "" {
 		return fmt.Errorf("claude.cli_path is required")
 	}
@@ -135,6 +144,7 @@ func (c *Config) String() string {
 	var sb strings.Builder
 	sb.WriteString("Configuration:\n")
 	sb.WriteString(fmt.Sprintf("  Telegram Token: %s\n", maskSecret(c.Telegram.Token)))
+	sb.WriteString(fmt.Sprintf("  Telegram Rate Limit: %d/%s\n", c.Telegram.RateLimit, c.Telegram.RateWindow))
 	sb.WriteString(fmt.Sprintf("  Claude CLI Path: %s\n", c.Claude.CLIPath))
 	sb.WriteString(fmt.Sprintf("  Claude Project Path: %s\n", c.Claude.ProjectPath))
 	sb.WriteString(fmt.Sprintf("  Claude Model: %s\n", c.Claude.Model))
