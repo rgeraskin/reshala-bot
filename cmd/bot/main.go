@@ -57,6 +57,7 @@ func main() {
 	sessionManager := claude.NewSessionManager(
 		cfg.Claude.CLIPath,
 		cfg.Claude.ProjectPath,
+		cfg.Claude.Model,
 		cfg.Claude.MaxConcurrentSessions,
 		cfg.Claude.QueryTimeout,
 	)

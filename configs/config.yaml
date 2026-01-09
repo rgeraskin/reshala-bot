@@ -10,6 +10,9 @@ claude:
   cli_path: /usr/local/bin/claude-code
   # Absolute path to the project Claude should operate on (used as working directory/context).
   project_path: /Users/user/Projects/work/claude
+  # Model to use for Claude queries (e.g., sonnet, opus, haiku).
+  # If not specified, uses Claude CLI's default model.
+  # model: sonnet
   # Per-query execution timeout for Claude requests.
   query_timeout: 5m
   # Maximum number of Claude sessions allowed to run concurrently.

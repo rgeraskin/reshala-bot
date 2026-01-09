@@ -16,13 +16,14 @@ import (
 // Unlike the previous ProcessManager, it does NOT spawn dummy processes.
 // Sessions are lightweight in-memory trackers; actual queries are one-shot CLI calls.
 type SessionManager struct {
-	sessions     map[string]*Session
-	mu           sync.RWMutex
-	querySem     chan struct{} // Semaphore for limiting concurrent queries
-	maxSessions  int
-	cliPath      string
-	projectPath  string
-	timeout      time.Duration
+	sessions    map[string]*Session
+	mu          sync.RWMutex
+	querySem    chan struct{} // Semaphore for limiting concurrent queries
+	maxSessions int
+	cliPath     string
+	projectPath string
+	model       string
+	timeout     time.Duration
 }
 
 // Session tracks an active chat session without any OS process.
@@ -34,21 +35,22 @@ type Session struct {
 	mu        sync.Mutex
 }
 
-func NewSessionManager(cliPath, projectPath string, maxSessions int, timeout time.Duration) *SessionManager {
+func NewSessionManager(cliPath, projectPath, model string, maxSessions int, timeout time.Duration) *SessionManager {
 	return &SessionManager{
 		sessions:    make(map[string]*Session),
 		querySem:    make(chan struct{}, maxSessions),
 		maxSessions: maxSessions,
 		cliPath:     cliPath,
 		projectPath: projectPath,
+		model:       model,
 		timeout:     timeout,
 	}
 }
 
 // NewProcessManager is an alias for backwards compatibility during refactoring.
 // Deprecated: Use NewSessionManager instead.
-func NewProcessManager(cliPath, projectPath string, maxSessions int, timeout time.Duration) *SessionManager {
-	return NewSessionManager(cliPath, projectPath, maxSessions, timeout)
+func NewProcessManager(cliPath, projectPath, model string, maxSessions int, timeout time.Duration) *SessionManager {
+	return NewSessionManager(cliPath, projectPath, model, maxSessions, timeout)
 }
 
 // ValidateCLI checks if the Claude CLI is available and executable.
@@ -176,9 +178,13 @@ func (sm *SessionManager) executeQuerySync(ctx context.Context, query string, cl
 	args := []string{
 		"-p",
 		"--output-format", "json",
-		"--model", "sonnet",
-		"--disable-slash-commands",
 	}
+
+	if sm.model != "" {
+		args = append(args, "--model", sm.model)
+	}
+
+	args = append(args, "--disable-slash-commands")
 
 	// Use --resume to continue existing conversation
 	if claudeSessionID != "" {

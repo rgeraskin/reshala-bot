@@ -23,9 +23,10 @@ type TelegramConfig struct {
 }
 
 type ClaudeConfig struct {
-	CLIPath              string        `yaml:"cli_path"`
-	ProjectPath          string        `yaml:"project_path"`
-	QueryTimeout         time.Duration `yaml:"query_timeout"`
+	CLIPath               string        `yaml:"cli_path"`
+	ProjectPath           string        `yaml:"project_path"`
+	Model                 string        `yaml:"model"`
+	QueryTimeout          time.Duration `yaml:"query_timeout"`
 	MaxConcurrentSessions int           `yaml:"max_concurrent_sessions"`
 }
 
@@ -113,6 +114,7 @@ func (c *Config) String() string {
 	sb.WriteString(fmt.Sprintf("  Telegram Token: %s\n", maskSecret(c.Telegram.Token)))
 	sb.WriteString(fmt.Sprintf("  Claude CLI Path: %s\n", c.Claude.CLIPath))
 	sb.WriteString(fmt.Sprintf("  Claude Project Path: %s\n", c.Claude.ProjectPath))
+	sb.WriteString(fmt.Sprintf("  Claude Model: %s\n", c.Claude.Model))
 	sb.WriteString(fmt.Sprintf("  Claude Query Timeout: %s\n", c.Claude.QueryTimeout))
 	sb.WriteString(fmt.Sprintf("  Claude Max Sessions: %d\n", c.Claude.MaxConcurrentSessions))
 	sb.WriteString(fmt.Sprintf("  Context TTL: %s\n", c.Context.TTL))
