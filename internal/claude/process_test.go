@@ -233,31 +233,3 @@ func TestGetOrCreateSession_DoesNotUpdateLastUsed(t *testing.T) {
 		t.Error("GetOrCreateSession should not update LastUsed")
 	}
 }
-
-// Backward compatibility tests
-func TestDeprecatedAliases(t *testing.T) {
-	sm := NewProcessManager("/usr/bin/claude", "/tmp/project", "sonnet", 10, 5*time.Minute)
-	if sm == nil {
-		t.Fatal("NewProcessManager should work as alias")
-	}
-
-	session, _ := sm.GetOrCreateProcess("chat123", "session-abc")
-	if session == nil {
-		t.Fatal("GetOrCreateProcess should work as alias")
-	}
-
-	count := sm.GetActiveProcessCount()
-	if count != 1 {
-		t.Errorf("GetActiveProcessCount = %d, want 1", count)
-	}
-
-	cleaned := sm.CleanupIdleProcesses(24 * time.Hour)
-	if cleaned != 0 {
-		t.Errorf("CleanupIdleProcesses = %d, want 0", cleaned)
-	}
-
-	err := sm.KillProcess("session-abc")
-	if err != nil {
-		t.Errorf("KillProcess failed: %v", err)
-	}
-}

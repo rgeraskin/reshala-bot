@@ -47,12 +47,6 @@ func NewSessionManager(cliPath, projectPath, model string, maxSessions int, time
 	}
 }
 
-// NewProcessManager is an alias for backwards compatibility during refactoring.
-// Deprecated: Use NewSessionManager instead.
-func NewProcessManager(cliPath, projectPath, model string, maxSessions int, timeout time.Duration) *SessionManager {
-	return NewSessionManager(cliPath, projectPath, model, maxSessions, timeout)
-}
-
 // ValidateCLI checks if the Claude CLI is available and executable.
 func (sm *SessionManager) ValidateCLI() error {
 	info, err := os.Stat(sm.cliPath)
@@ -128,12 +122,6 @@ func (sm *SessionManager) GetOrCreateSession(chatID, sessionID string) (*Session
 	sm.sessions[sessionID] = session
 	slog.Info("Created session", "session_id", sessionID, "chat_id", chatID)
 	return session, nil
-}
-
-// GetOrCreateProcess is an alias for backwards compatibility.
-// Deprecated: Use GetOrCreateSession instead.
-func (sm *SessionManager) GetOrCreateProcess(chatID, sessionID string) (*Session, error) {
-	return sm.GetOrCreateSession(chatID, sessionID)
 }
 
 // ExecuteQuery runs a query against Claude CLI for the given session.
@@ -233,23 +221,11 @@ func (sm *SessionManager) KillSession(sessionID string) error {
 	return nil
 }
 
-// KillProcess is an alias for backwards compatibility.
-// Deprecated: Use KillSession instead.
-func (sm *SessionManager) KillProcess(sessionID string) error {
-	return sm.KillSession(sessionID)
-}
-
 // GetActiveSessionCount returns the number of active sessions.
 func (sm *SessionManager) GetActiveSessionCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return len(sm.sessions)
-}
-
-// GetActiveProcessCount is an alias for backwards compatibility.
-// Deprecated: Use GetActiveSessionCount instead.
-func (sm *SessionManager) GetActiveProcessCount() int {
-	return sm.GetActiveSessionCount()
 }
 
 // CleanupIdleSessions removes sessions that have been idle longer than maxIdleTime.
@@ -295,12 +271,6 @@ func (sm *SessionManager) CleanupIdleSessions(maxIdleTime time.Duration) int {
 	}
 
 	return cleaned
-}
-
-// CleanupIdleProcesses is an alias for backwards compatibility.
-// Deprecated: Use CleanupIdleSessions instead.
-func (sm *SessionManager) CleanupIdleProcesses(maxIdleTime time.Duration) int {
-	return sm.CleanupIdleSessions(maxIdleTime)
 }
 
 // ClaudeJSONOutput represents the parsed JSON response from Claude CLI.
