@@ -74,19 +74,3 @@ func (m *Manager) Refresh(chatID string) error {
 	}
 	return nil
 }
-
-func (m *Manager) Deactivate(chatID string) error {
-	if err := m.storage.DeactivateContext(chatID); err != nil {
-		return fmt.Errorf("failed to deactivate context: %w", err)
-	}
-	slog.Info("Deactivated context", "chat_id", chatID)
-	return nil
-}
-
-func (m *Manager) GetActiveCount() (int, error) {
-	count, err := m.storage.GetActiveContextCount()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get active count: %w", err)
-	}
-	return count, nil
-}
