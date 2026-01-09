@@ -221,14 +221,22 @@ func (s *Storage) CleanupContextTx(chatID, cleanupType string) (*CleanupResult, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete messages: %w", err)
 	}
-	messagesDeleted, _ := msgResult.RowsAffected()
+	messagesDeleted, err := msgResult.RowsAffected()
+	if err != nil {
+		// Log but don't fail - the delete succeeded, we just can't get the count
+		messagesDeleted = 0
+	}
 
 	// Delete tool executions
 	toolResult, err := tx.Exec(`DELETE FROM tool_executions WHERE chat_id = ?`, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete tool executions: %w", err)
 	}
-	toolsDeleted, _ := toolResult.RowsAffected()
+	toolsDeleted, err := toolResult.RowsAffected()
+	if err != nil {
+		// Log but don't fail - the delete succeeded, we just can't get the count
+		toolsDeleted = 0
+	}
 
 	// Deactivate context
 	_, err = tx.Exec(`UPDATE chat_contexts SET is_active = 0 WHERE chat_id = ?`, chatID)
