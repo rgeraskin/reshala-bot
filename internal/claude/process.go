@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -43,6 +44,49 @@ func NewProcessManager(cliPath, projectPath string, maxProcesses int, timeout ti
 		projectPath: projectPath,
 		timeout:     timeout,
 	}
+}
+
+// ValidateCLI checks if the Claude CLI is available and executable
+func (pm *ProcessManager) ValidateCLI() error {
+	// Check if file exists
+	info, err := os.Stat(pm.cliPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("claude CLI not found at path: %s", pm.cliPath)
+		}
+		return fmt.Errorf("failed to stat claude CLI path: %w", err)
+	}
+
+	// Check if it's a regular file (not a directory)
+	if info.IsDir() {
+		return fmt.Errorf("claude CLI path is a directory, not a file: %s", pm.cliPath)
+	}
+
+	// Check if it's executable
+	if info.Mode()&0111 == 0 {
+		return fmt.Errorf("claude CLI is not executable: %s (mode: %s)", pm.cliPath, info.Mode().String())
+	}
+
+	// Try running with --version to verify it's actually the Claude CLI
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, pm.cliPath, "--version")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to execute claude CLI --version: %w (stderr: %s)", err, stderr.String())
+	}
+
+	version := stdout.String()
+	if version == "" {
+		version = stderr.String()
+	}
+
+	slog.Info("Claude CLI validation successful", "path", pm.cliPath, "version", version)
+	return nil
 }
 
 func (pm *ProcessManager) GetOrCreateProcess(chatID, sessionID string) (*ClaudeProcess, error) {

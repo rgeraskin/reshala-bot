@@ -67,6 +67,13 @@ func main() {
 	executor := claude.NewExecutor(processManager, cfg.Claude.ProjectPath, cfg.Claude.QueryTimeout)
 	slog.Info("Claude executor initialized")
 
+	// Validate Claude CLI is available
+	if err := processManager.ValidateCLI(); err != nil {
+		slog.Error("Claude CLI validation failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Claude CLI validated successfully")
+
 	expiryWorker := ctx.NewExpiryWorker(store, processManager, cfg.Context.CleanupInterval)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
@@ -103,6 +110,9 @@ func main() {
 
 		activeCount := processManager.GetActiveProcessCount()
 		slog.Info("Cleaning up active processes", "count", activeCount)
+
+		// Stop Telegram client gracefully
+		platform.Stop()
 
 		os.Exit(0)
 	}()

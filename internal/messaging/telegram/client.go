@@ -112,6 +112,12 @@ func (c *Client) Start(handler messaging.MessageHandler) error {
 	return nil
 }
 
+// Stop gracefully shuts down the Telegram client
+func (c *Client) Stop() {
+	slog.Info("Stopping Telegram bot")
+	c.bot.StopReceivingUpdates()
+}
+
 func (c *Client) GetPlatformName() string {
 	return "telegram"
 }
