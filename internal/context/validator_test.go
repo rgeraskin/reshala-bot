@@ -2,7 +2,6 @@ package context
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/rg/aiops/internal/storage"
@@ -14,12 +13,6 @@ func TestNewValidator(t *testing.T) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
-
-	// Create a CLAUDE.md file
-	claudeMd := filepath.Join(tmpDir, "CLAUDE.md")
-	if err := os.WriteFile(claudeMd, []byte("# Test Context"), 0644); err != nil {
-		t.Fatalf("Failed to write CLAUDE.md: %v", err)
-	}
 
 	validator, err := NewValidator(nil, tmpDir, true)
 	if err != nil {
@@ -144,65 +137,3 @@ func TestValidateQuery_SlashCommand(t *testing.T) {
 	}
 }
 
-func TestLoadSREContext(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "sre-context-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Create all three context files
-	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte("# Claude Instructions"), 0644); err != nil {
-		t.Fatalf("Failed to write CLAUDE.md: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "RUNBOOKS.md"), []byte("# Runbooks"), 0644); err != nil {
-		t.Fatalf("Failed to write RUNBOOKS.md: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "RESOURCES.md"), []byte("# Resources"), 0644); err != nil {
-		t.Fatalf("Failed to write RESOURCES.md: %v", err)
-	}
-
-	context, err := loadSREContext(tmpDir)
-	if err != nil {
-		t.Fatalf("loadSREContext failed: %v", err)
-	}
-
-	if context == "" {
-		t.Error("Expected non-empty context")
-	}
-	if !contains(context, "CLAUDE.md") {
-		t.Error("Expected context to contain CLAUDE.md marker")
-	}
-	if !contains(context, "RUNBOOKS.md") {
-		t.Error("Expected context to contain RUNBOOKS.md marker")
-	}
-	if !contains(context, "RESOURCES.md") {
-		t.Error("Expected context to contain RESOURCES.md marker")
-	}
-}
-
-func TestLoadSREContext_NoFiles(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "sre-context-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	_, err = loadSREContext(tmpDir)
-	if err == nil {
-		t.Error("Expected error when no context files exist")
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

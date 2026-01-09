@@ -1,31 +1,24 @@
 package context
 
 import (
-	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/rg/aiops/internal/storage"
 )
 
 type Validator struct {
-	storage        *storage.Storage
-	sreContext     string
+	storage           *storage.Storage
 	validationEnabled bool
 }
 
+// NewValidator creates a new Validator. The projectPath parameter is accepted
+// for API compatibility but is currently unused.
 func NewValidator(storage *storage.Storage, projectPath string, validationEnabled bool) (*Validator, error) {
-	sreContext, err := loadSREContext(projectPath)
-	if err != nil {
-		slog.Warn("Failed to load SRE context", "error", err)
-		sreContext = "No context available"
-	}
+	_ = projectPath // Reserved for future use (e.g., loading SRE context)
 
 	return &Validator{
-		storage:        storage,
-		sreContext:     sreContext,
+		storage:           storage,
 		validationEnabled: validationEnabled,
 	}, nil
 }
@@ -74,35 +67,4 @@ func (v *Validator) ValidateQuery(ctx *storage.ChatContext, query string) (bool,
 	}
 
 	return false, "Query doesn't appear to be related to SRE operations. Please ask about infrastructure, deployments, incidents, or related topics.", nil
-}
-
-func loadSREContext(projectPath string) (string, error) {
-	var context strings.Builder
-
-	claudeMdPath := filepath.Join(projectPath, "CLAUDE.md")
-	if content, err := os.ReadFile(claudeMdPath); err == nil {
-		context.WriteString("=== CLAUDE.md ===\n")
-		context.Write(content)
-		context.WriteString("\n\n")
-	}
-
-	runbooksPath := filepath.Join(projectPath, "RUNBOOKS.md")
-	if content, err := os.ReadFile(runbooksPath); err == nil {
-		context.WriteString("=== RUNBOOKS.md ===\n")
-		context.Write(content)
-		context.WriteString("\n\n")
-	}
-
-	resourcesPath := filepath.Join(projectPath, "RESOURCES.md")
-	if content, err := os.ReadFile(resourcesPath); err == nil {
-		context.WriteString("=== RESOURCES.md ===\n")
-		context.Write(content)
-		context.WriteString("\n\n")
-	}
-
-	if context.Len() == 0 {
-		return "", fmt.Errorf("no context files found")
-	}
-
-	return context.String(), nil
 }
