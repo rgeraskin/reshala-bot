@@ -104,3 +104,13 @@ func (m *Manager) Refresh(chatID string) error {
 	}
 	return nil
 }
+
+// GenerateSessionID creates a new unique session ID.
+func (m *Manager) GenerateSessionID() string {
+	return uuid.New().String()
+}
+
+// GetTTL returns the configured session TTL.
+func (m *Manager) GetTTL() time.Duration {
+	return m.ttl
+}

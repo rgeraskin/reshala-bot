@@ -254,3 +254,180 @@ func (s *Storage) CleanupContextTx(chatID, cleanupType string) (*CleanupResult, 
 		ToolsPreserved:    toolsPreserved,
 	}, nil
 }
+
+// TransferResult holds the result of a session transfer operation.
+type TransferResult struct {
+	SourceChatID        string
+	SourceWasActive     bool
+	TargetChatID        string
+	ClaudeSessionID     string
+	MessagesTransferred int
+	ToolsTransferred    int
+}
+
+// GetContextByClaudeSessionID finds a context by its Claude session ID.
+// Prefers active contexts, then falls back to the most recently interacted inactive one.
+// Returns (nil, nil) if not found.
+func (s *Storage) GetContextByClaudeSessionID(claudeSessionID string) (*ChatContext, error) {
+	var ctx ChatContext
+	var claudeSID sql.NullString
+
+	// ORDER BY is_active DESC puts active (1) before inactive (0)
+	// Then by last_interaction DESC to get most recent
+	err := s.db.QueryRow(`
+		SELECT id, chat_id, chat_type, session_id, claude_session_id,
+		       created_at, last_interaction, expires_at, is_active
+		FROM chat_contexts
+		WHERE claude_session_id = ?
+		ORDER BY is_active DESC, last_interaction DESC
+		LIMIT 1
+	`, claudeSessionID).Scan(
+		&ctx.ID, &ctx.ChatID, &ctx.ChatType, &ctx.SessionID,
+		&claudeSID, &ctx.CreatedAt, &ctx.LastInteraction,
+		&ctx.ExpiresAt, &ctx.IsActive,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get context by claude session id: %w", err)
+	}
+
+	if claudeSID.Valid {
+		ctx.ClaudeSessionID = claudeSID.String
+	}
+
+	return &ctx, nil
+}
+
+// HasActiveContextWithClaudeSessionID checks if any chat has an active context
+// with the given Claude session ID, excluding the specified chat.
+func (s *Storage) HasActiveContextWithClaudeSessionID(claudeSessionID, excludeChatID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM chat_contexts
+		WHERE claude_session_id = ? AND is_active = 1 AND chat_id != ?
+	`, claudeSessionID, excludeChatID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check active context: %w", err)
+	}
+	return count > 0, nil
+}
+
+// ReactivateContext reactivates an inactive context and refreshes its TTL.
+func (s *Storage) ReactivateContext(chatID string, ttl time.Duration) error {
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+
+	result, err := s.db.Exec(`
+		UPDATE chat_contexts
+		SET is_active = 1, last_interaction = ?, expires_at = ?
+		WHERE chat_id = ? AND is_active = 0
+	`, now, expiresAt, chatID)
+	if err != nil {
+		return fmt.Errorf("failed to reactivate context: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("context not found or already active")
+	}
+
+	return nil
+}
+
+// TransferSession atomically transfers a Claude session from source to target chat.
+// Handles both active and inactive source sessions.
+// Returns transfer details including whether source was active (for notification logic).
+func (s *Storage) TransferSession(sourceChatID, targetChatID, targetChatType, newSessionID string, ttl time.Duration) (*TransferResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Get source context details
+	var sourceSessionID string
+	var claudeSessionID sql.NullString
+	var sourceIsActive bool
+	err = tx.QueryRow(`
+		SELECT session_id, claude_session_id, is_active
+		FROM chat_contexts
+		WHERE chat_id = ?
+	`, sourceChatID).Scan(&sourceSessionID, &claudeSessionID, &sourceIsActive)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("source context not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get source context: %w", err)
+	}
+
+	if !claudeSessionID.Valid || claudeSessionID.String == "" {
+		return nil, fmt.Errorf("source context has no claude_session_id")
+	}
+
+	// Count messages and tools to transfer (by session_id)
+	var msgCount, toolCount int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM messages WHERE session_id = ?`, sourceSessionID).Scan(&msgCount)
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM tool_executions WHERE session_id = ?`, sourceSessionID).Scan(&toolCount)
+
+	// Deactivate source context
+	_, err = tx.Exec(`UPDATE chat_contexts SET is_active = 0 WHERE chat_id = ?`, sourceChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deactivate source context: %w", err)
+	}
+
+	// Create/replace target context with same claude_session_id but new session_id
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+	_, err = tx.Exec(`
+		INSERT OR REPLACE INTO chat_contexts
+		(chat_id, chat_type, session_id, claude_session_id, created_at, last_interaction, expires_at, is_active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+	`, targetChatID, targetChatType, newSessionID, claudeSessionID.String, now, now, expiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create target context: %w", err)
+	}
+
+	// Transfer messages: update chat_id and session_id
+	_, err = tx.Exec(`
+		UPDATE messages SET chat_id = ?, session_id = ? WHERE session_id = ?
+	`, targetChatID, newSessionID, sourceSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to transfer messages: %w", err)
+	}
+
+	// Transfer tool executions: update chat_id and session_id
+	_, err = tx.Exec(`
+		UPDATE tool_executions SET chat_id = ?, session_id = ? WHERE session_id = ?
+	`, targetChatID, newSessionID, sourceSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to transfer tools: %w", err)
+	}
+
+	// Log transfer in cleanup_log
+	_, err = tx.Exec(`
+		INSERT INTO cleanup_log (chat_id, cleanup_type, messages_deleted, tools_deleted, created_at)
+		VALUES (?, 'transfer', 0, 0, ?)
+	`, sourceChatID, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to log transfer: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &TransferResult{
+		SourceChatID:        sourceChatID,
+		SourceWasActive:     sourceIsActive,
+		TargetChatID:        targetChatID,
+		ClaudeSessionID:     claudeSessionID.String,
+		MessagesTransferred: msgCount,
+		ToolsTransferred:    toolCount,
+	}, nil
+}

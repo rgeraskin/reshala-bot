@@ -102,6 +102,10 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			return h.handleHelpCommand(msg.ChatID)
 		case "/history":
 			return h.handleHistoryCommand(msg.ChatID)
+		case "/session":
+			return h.handleSessionCommand(msg.ChatID)
+		case "/resume":
+			return h.handleResumeCommand(msg.ChatID, fields)
 		default:
 			// Unknown slash command - return helpful message
 			return h.platform.SendMessage(msg.ChatID,
@@ -109,6 +113,8 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 					"/status - Show session info\n"+
 					"/help - Show help message\n"+
 					"/history - Export conversation history\n"+
+					"/session - Show session ID for transfer\n"+
+					"/resume - Resume or transfer a session\n"+
 					"/new - Reset session\n\n"+
 					"For other queries, just ask without using a slash command.",
 					cmd))
@@ -297,6 +303,217 @@ func (h *Handler) handleHistoryCommand(chatID string) error {
 	return h.sendResponse(chatID, response)
 }
 
+func (h *Handler) handleSessionCommand(chatID string) error {
+	slog.Info("Processing /session command", "chat_id", chatID)
+
+	ctx, err := h.storage.GetContext(chatID)
+	if err != nil {
+		slog.Error("Failed to get context for /session", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to retrieve session information.")
+	}
+
+	if ctx == nil {
+		return h.platform.SendMessage(chatID,
+			"ℹ️ No session found. Send a message to start a conversation.")
+	}
+
+	if ctx.ClaudeSessionID == "" {
+		return h.platform.SendMessage(chatID,
+			"⚠️ Session exists but Claude session not yet initialized.\n\n"+
+				"Send at least one message first to generate a Claude session ID.")
+	}
+
+	statusEmoji := "✅"
+	statusText := "Active"
+	if !ctx.IsActive {
+		statusEmoji = "💤"
+		statusText = "Inactive (expired)"
+	}
+
+	response := fmt.Sprintf(
+		"🔑 *Session Information*\n\n"+
+			"*Claude Session ID:*\n`%s`\n\n"+
+			"*Status:* %s %s\n\n"+
+			"💡 *To transfer this session to another chat:*\n"+
+			"`/resume %s`\n\n"+
+			"⚠️ Transferring will move the conversation and history to the new chat.",
+		ctx.ClaudeSessionID,
+		statusEmoji, statusText,
+		ctx.ClaudeSessionID)
+
+	return h.platform.SendMessage(chatID, response)
+}
+
+func (h *Handler) handleResumeCommand(chatID string, fields []string) error {
+	slog.Info("Processing /resume command", "chat_id", chatID, "args", fields)
+
+	// /resume without args: reactivate current chat's own session
+	if len(fields) < 2 || strings.TrimSpace(fields[1]) == "" {
+		return h.handleResumeOwnSession(chatID)
+	}
+
+	// /resume <session_id>: transfer session from another chat
+	claudeSessionID := strings.TrimSpace(fields[1])
+	return h.handleResumeFromSession(chatID, claudeSessionID)
+}
+
+// handleResumeOwnSession reactivates the current chat's own expired session.
+func (h *Handler) handleResumeOwnSession(chatID string) error {
+	slog.Info("Processing /resume (own session)", "chat_id", chatID)
+
+	ctx, err := h.storage.GetContext(chatID)
+	if err != nil {
+		slog.Error("Failed to get context for /resume", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to retrieve session information.")
+	}
+
+	if ctx == nil {
+		return h.platform.SendMessage(chatID,
+			"ℹ️ No session found. Send a message to start a new conversation.")
+	}
+
+	if ctx.ClaudeSessionID == "" {
+		return h.platform.SendMessage(chatID,
+			"⚠️ No Claude session to resume. Send a message to start a conversation.")
+	}
+
+	if ctx.IsActive {
+		return h.platform.SendMessage(chatID,
+			"✅ Session is already active! Just send a message to continue.")
+	}
+
+	// Check if another chat has taken this session
+	hasOther, err := h.storage.HasActiveContextWithClaudeSessionID(ctx.ClaudeSessionID, chatID)
+	if err != nil {
+		slog.Error("Failed to check for active sessions", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to check session status.")
+	}
+
+	if hasOther {
+		return h.platform.SendMessage(chatID,
+			fmt.Sprintf("⚠️ This session was transferred to another chat.\n\n"+
+				"To reclaim it, use:\n`/resume %s`\n\n"+
+				"Or send a message to start a fresh conversation.",
+				ctx.ClaudeSessionID))
+	}
+
+	// Reactivate the session
+	if err := h.storage.ReactivateContext(chatID, h.contextManager.GetTTL()); err != nil {
+		slog.Error("Failed to reactivate context", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to reactivate session.")
+	}
+
+	slog.Info("Reactivated session", "chat_id", chatID, "claude_session_id", ctx.ClaudeSessionID)
+
+	return h.platform.SendMessage(chatID,
+		fmt.Sprintf("✅ *Session Reactivated*\n\n"+
+			"*Claude Session ID:* `%s`\n\n"+
+			"Your conversation has been restored. Continue chatting!",
+			ctx.ClaudeSessionID))
+}
+
+// handleResumeFromSession transfers a session from another chat to this one.
+func (h *Handler) handleResumeFromSession(chatID, claudeSessionID string) error {
+	slog.Info("Processing /resume (from session)", "chat_id", chatID, "claude_session_id", claudeSessionID)
+
+	// Find the source context
+	sourceCtx, err := h.storage.GetContextByClaudeSessionID(claudeSessionID)
+	if err != nil {
+		slog.Error("Failed to lookup session", "chat_id", chatID, "claude_session_id", claudeSessionID, "error", err)
+		return h.sendError(chatID, "Failed to lookup session.")
+	}
+
+	if sourceCtx == nil {
+		return h.platform.SendMessage(chatID,
+			"❌ Session not found. Possible reasons:\n"+
+				"• Session ID is incorrect\n"+
+				"• Session has been reset with /new\n\n"+
+				"Use /session in the source chat to get the correct ID.")
+	}
+
+	// Check if this chat already owns the session
+	if sourceCtx.ChatID == chatID {
+		if sourceCtx.IsActive {
+			return h.platform.SendMessage(chatID,
+				"✅ This chat already owns this session and it's active!\n\n"+
+					"Just send a message to continue.")
+		}
+		// Reactivate own session
+		return h.handleResumeOwnSession(chatID)
+	}
+
+	// Get target chat type
+	chatType, err := h.platform.GetChatType(chatID)
+	if err != nil {
+		slog.Error("Failed to get chat type", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to determine chat type.")
+	}
+
+	// Generate new session ID for target
+	newSessionID := h.contextManager.GenerateSessionID()
+
+	// Execute transfer
+	result, err := h.storage.TransferSession(
+		sourceCtx.ChatID,
+		chatID,
+		chatType.String(),
+		newSessionID,
+		h.contextManager.GetTTL(),
+	)
+	if err != nil {
+		slog.Error("Failed to transfer session",
+			"source_chat_id", sourceCtx.ChatID,
+			"target_chat_id", chatID,
+			"claude_session_id", claudeSessionID,
+			"error", err)
+		return h.sendError(chatID, "Failed to transfer session. Please try again.")
+	}
+
+	// Remove source session from SessionManager memory
+	if err := h.sessionManager.KillSession(sourceCtx.SessionID); err != nil {
+		slog.Debug("Failed to remove source session from manager", "session_id", sourceCtx.SessionID, "error", err)
+	}
+
+	slog.Info("Session transferred",
+		"source_chat_id", result.SourceChatID,
+		"target_chat_id", result.TargetChatID,
+		"claude_session_id", result.ClaudeSessionID,
+		"messages", result.MessagesTransferred,
+		"tools", result.ToolsTransferred,
+		"source_was_active", result.SourceWasActive)
+
+	// Notify source chat only if it was active
+	if result.SourceWasActive {
+		notifyMsg := fmt.Sprintf(
+			"🔄 *Session Transferred*\n\n"+
+				"Your Claude session has been transferred to another chat.\n\n"+
+				"*Session ID:* `%s`\n"+
+				"*Messages transferred:* %d\n"+
+				"*Tools transferred:* %d\n\n"+
+				"This chat's session is now inactive. Send a message to start fresh,\n"+
+				"or use `/resume %s` to reclaim the session.",
+			result.ClaudeSessionID,
+			result.MessagesTransferred,
+			result.ToolsTransferred,
+			result.ClaudeSessionID)
+
+		if err := h.platform.SendMessage(result.SourceChatID, notifyMsg); err != nil {
+			slog.Warn("Failed to notify source chat", "chat_id", result.SourceChatID, "error", err)
+		}
+	}
+
+	// Send success message to target chat
+	return h.platform.SendMessage(chatID,
+		fmt.Sprintf("✅ *Session Transferred Successfully*\n\n"+
+			"*Claude Session ID:* `%s`\n"+
+			"*Messages restored:* %d\n"+
+			"*Tools restored:* %d\n\n"+
+			"You can now continue the conversation where it left off!",
+			result.ClaudeSessionID,
+			result.MessagesTransferred,
+			result.ToolsTransferred))
+}
+
 func truncateText(text string, maxLen int) string {
 	if len(text) <= maxLen {
 		return text
@@ -453,13 +670,19 @@ func getHelpText() string {
 /status - Show session information and statistics
 /help - Display this help message
 /history - Export conversation history
+/session - Show Claude session ID for transfer
+/resume - Reactivate expired session or transfer from another chat
 /new - Reset session and start fresh
 
 💡 *Usage Tips*
 • Sessions expire after 2 hours of inactivity
 • Each message extends the session TTL
 • All MCP tools are read-only for safety
-• Bot only responds in whitelisted groups
+
+🔄 *Session Transfer*
+To continue a conversation in another chat (e.g., move from group to DM):
+1. Use /session in source chat to get the session ID
+2. Use /resume <session_id> in target chat to transfer
 
 *For SRE operations, just ask naturally:*
 "Show pods in production"
