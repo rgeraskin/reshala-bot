@@ -106,7 +106,3 @@ func loadSREContext(projectPath string) (string, error) {
 
 	return context.String(), nil
 }
-
-func (v *Validator) GetSREContext() string {
-	return v.sreContext
-}
