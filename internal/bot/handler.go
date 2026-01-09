@@ -81,7 +81,11 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 
 	// Check for slash commands
 	if strings.HasPrefix(msg.Text, "/") {
-		cmd := strings.Fields(msg.Text)[0] // Extract command
+		fields := strings.Fields(msg.Text)
+		if len(fields) == 0 {
+			return nil // Ignore whitespace-only messages starting with /
+		}
+		cmd := fields[0]
 		switch cmd {
 		case "/new":
 			return h.handleNewCommand(msg.ChatID)
