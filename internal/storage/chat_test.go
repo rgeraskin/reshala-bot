@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS chat_contexts (
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id TEXT NOT NULL,
+    session_id TEXT,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at DATETIME NOT NULL,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS tool_executions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id TEXT NOT NULL,
+    session_id TEXT,
     tool_name TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at DATETIME NOT NULL,
@@ -252,9 +254,9 @@ func TestCleanupContextTx(t *testing.T) {
 
 	// Create context with messages and tool executions
 	_, _ = store.CreateContext("chat123", "group", "session-1", 2*time.Hour)
-	_ = store.SaveMessage("chat123", "user", "Hello")
-	_ = store.SaveMessage("chat123", "assistant", "Hi there")
-	_ = store.SaveToolExecution("chat123", "kubectl", "success")
+	_ = store.SaveMessage("chat123", "session-1", "user", "Hello")
+	_ = store.SaveMessage("chat123", "session-1", "assistant", "Hi there")
+	_ = store.SaveToolExecution("chat123", "session-1", "kubectl", "success")
 
 	// Run transactional cleanup
 	result, err := store.CleanupContextTx("chat123", "test")
@@ -262,11 +264,12 @@ func TestCleanupContextTx(t *testing.T) {
 		t.Fatalf("CleanupContextTx failed: %v", err)
 	}
 
-	if result.MessagesDeleted != 2 {
-		t.Errorf("MessagesDeleted = %d, want 2", result.MessagesDeleted)
+	// Verify preserved counts (data is NOT deleted)
+	if result.MessagesPreserved != 2 {
+		t.Errorf("MessagesPreserved = %d, want 2", result.MessagesPreserved)
 	}
-	if result.ToolsDeleted != 1 {
-		t.Errorf("ToolsDeleted = %d, want 1", result.ToolsDeleted)
+	if result.ToolsPreserved != 1 {
+		t.Errorf("ToolsPreserved = %d, want 1", result.ToolsPreserved)
 	}
 
 	// Verify context is deactivated
@@ -275,10 +278,47 @@ func TestCleanupContextTx(t *testing.T) {
 		t.Error("Context should be inactive after cleanup")
 	}
 
-	// Verify messages are deleted
+	// Verify messages are PRESERVED (not deleted)
 	messages, _ := store.GetRecentMessages("chat123", 100)
-	if len(messages) != 0 {
-		t.Errorf("Expected 0 messages after cleanup, got %d", len(messages))
+	if len(messages) != 2 {
+		t.Errorf("Expected 2 messages preserved after cleanup, got %d", len(messages))
+	}
+
+	// Verify tool executions are PRESERVED
+	tools, _ := store.GetToolExecutions("chat123", 100)
+	if len(tools) != 1 {
+		t.Errorf("Expected 1 tool execution preserved after cleanup, got %d", len(tools))
+	}
+}
+
+func TestSessionIsolation(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create first session and add messages
+	_, _ = store.CreateContext("chat123", "group", "session-1", 2*time.Hour)
+	_ = store.SaveMessage("chat123", "session-1", "user", "Message from session 1")
+
+	// Cleanup (simulate expiry) - data preserved but context deactivated
+	_, _ = store.CleanupContextTx("chat123", "expired")
+
+	// Create second session and add messages
+	_, _ = store.CreateContext("chat123", "group", "session-2", 2*time.Hour)
+	_ = store.SaveMessage("chat123", "session-2", "user", "Message from session 2")
+
+	// Session-scoped query should only return session-2 messages
+	session2Messages, _ := store.GetRecentMessagesBySession("chat123", "session-2", 100)
+	if len(session2Messages) != 1 {
+		t.Errorf("Expected 1 message in session-2, got %d", len(session2Messages))
+	}
+	if len(session2Messages) > 0 && session2Messages[0].Content != "Message from session 2" {
+		t.Errorf("Expected 'Message from session 2', got '%s'", session2Messages[0].Content)
+	}
+
+	// All-chat query should return both sessions' messages
+	allMessages, _ := store.GetRecentMessages("chat123", 100)
+	if len(allMessages) != 2 {
+		t.Errorf("Expected 2 total messages, got %d", len(allMessages))
 	}
 }
 

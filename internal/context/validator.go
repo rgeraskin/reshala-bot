@@ -56,9 +56,9 @@ func (v *Validator) ValidateQuery(ctx *storage.ChatContext, query string) (bool,
 		return true, "", nil
 	}
 
-	messages, err := v.storage.GetRecentMessages(ctx.ChatID, 5)
+	messages, err := v.storage.GetRecentMessagesBySession(ctx.ChatID, ctx.SessionID, 5)
 	if err != nil {
-		slog.Warn("Failed to get recent messages", "chat_id", ctx.ChatID, "error", err)
+		slog.Warn("Failed to get recent messages", "chat_id", ctx.ChatID, "session_id", ctx.SessionID, "error", err)
 		return true, "", nil
 	}
 

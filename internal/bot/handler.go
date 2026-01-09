@@ -130,7 +130,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		slog.Warn("Failed to refresh context", "chat_id", msg.ChatID, "error", err)
 	}
 
-	if err := h.storage.SaveMessage(msg.ChatID, "user", msg.Text); err != nil {
+	if err := h.storage.SaveMessage(msg.ChatID, ctx.SessionID, "user", msg.Text); err != nil {
 		// Log error but continue - user message loss is acceptable, we still want to respond
 		slog.Error("Failed to save user message", "chat_id", msg.ChatID, "error", err)
 	}
@@ -174,14 +174,14 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	sanitized := h.sanitizer.Sanitize(response.Result)
 
 	// Critical: Don't send response if we can't persist it (prevents data loss)
-	if err := h.storage.SaveMessage(msg.ChatID, "assistant", sanitized); err != nil {
+	if err := h.storage.SaveMessage(msg.ChatID, ctx.SessionID, "assistant", sanitized); err != nil {
 		slog.Error("Failed to save assistant message", "chat_id", msg.ChatID, "error", err)
 		return h.sendError(msg.ChatID, "Failed to save response. Please try again.")
 	}
 
 	tools := claude.ExtractToolExecutions(response.Result)
 	for _, tool := range tools {
-		if err := h.storage.SaveToolExecution(msg.ChatID, tool.ToolName, tool.Status); err != nil {
+		if err := h.storage.SaveToolExecution(msg.ChatID, ctx.SessionID, tool.ToolName, tool.Status); err != nil {
 			slog.Warn("Failed to save tool execution",
 				"chat_id", msg.ChatID,
 				"tool", tool.ToolName,
@@ -245,15 +245,15 @@ func (h *Handler) handleStatusCommand(chatID string) error {
 			"ℹ️ No active session. Send a message to start a new conversation with Claude.")
 	}
 
-	// Get message count
-	msgCount, err := h.storage.GetMessageCount(chatID)
+	// Get message count for current session
+	msgCount, err := h.storage.GetMessageCountBySession(chatID, ctx.SessionID)
 	if err != nil {
 		slog.Warn("Failed to get message count", "chat_id", chatID, "error", err)
 		msgCount = 0
 	}
 
-	// Get tool execution count
-	tools, err := h.storage.GetToolExecutions(chatID, 1000)
+	// Get tool execution count for current session
+	tools, err := h.storage.GetToolExecutionsBySession(chatID, ctx.SessionID, 1000)
 	if err != nil {
 		slog.Warn("Failed to get tool executions", "chat_id", chatID, "error", err)
 		tools = []*storage.ToolExecution{}
@@ -277,12 +277,12 @@ func (h *Handler) handleHistoryCommand(chatID string) error {
 		return h.sendError(chatID, "Failed to retrieve conversation history.")
 	}
 
-	if ctx == nil {
+	if ctx == nil || !ctx.IsActive {
 		return h.platform.SendMessage(chatID,
-			"📜 No conversation history found. Start chatting to build history!")
+			"📜 No active session. Start chatting to build history!")
 	}
 
-	messages, err := h.storage.GetRecentMessages(chatID, 1000)
+	messages, err := h.storage.GetRecentMessagesBySession(chatID, ctx.SessionID, 1000)
 	if err != nil {
 		slog.Error("Failed to get messages for /history", "chat_id", chatID, "error", err)
 		return h.sendError(chatID, "Failed to retrieve messages.")

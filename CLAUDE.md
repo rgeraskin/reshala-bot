@@ -126,11 +126,13 @@ internal/storage/storage.go (SQLite persistence)
 
 **messages**: Conversation history per chat
 - Stores user/assistant messages with timestamps
-- Used for context reconstruction if needed
+- `session_id` column enables per-session isolation (added in migration 003)
+- Data preserved on session expiry; session-scoped queries filter by `session_id`
 
 **tool_executions**: Audit log of MCP tool usage
 - Tracks which SRE tools were called (kubectl, argocd, jira, etc.)
-- Input/output/duration for debugging
+- `session_id` column enables per-session isolation (added in migration 003)
+- Data preserved on session expiry for audit purposes
 
 **cleanup_log**: Records expired session cleanup
 - Audit trail for session lifecycle
@@ -325,17 +327,17 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 - **Creation**: `contextManager.GetOrCreate()` → INSERT OR REPLACE in database
 - **Refresh**: Every message extends TTL by 2 hours
 - **Expiry**: Background worker checks every 5 minutes
-- **Cleanup**: Remove session from memory, delete messages/tools, deactivate context, log audit
+- **Cleanup**: Remove session from memory, deactivate context, log audit (messages/tools preserved with `session_id` for isolation)
 - **Manual Reset**: `/new` command triggers `expiryWorker.ManualCleanup()`
 
 ### Storage Layer Key Methods
 - **CreateContext** (`chat.go:21`): Uses `INSERT OR REPLACE` for UNIQUE constraint handling
-- **GetContext** (`chat.go:50`): Returns nil gracefully if not found
-- **RefreshContext** (`chat.go:76`): Extends `expires_at`, only if `is_active = 1`
-- **GetExpiredContexts** (`chat.go:100`): Query for cleanup worker
-- **DeactivateContext** (`chat.go:134`): Sets `is_active = 0`, keeps row
-- **DeleteMessagesByChat** (`message.go:68`): Returns count deleted
-- **LogCleanup** (`tool.go:68`): Audit trail (types: "expired", "manual", "error")
+- **GetContext** (`chat.go:55`): Returns nil gracefully if not found
+- **RefreshContext** (`chat.go:88`): Extends `expires_at`, only if `is_active = 1`
+- **GetExpiredContexts** (`chat.go:112`): Query for cleanup worker
+- **CleanupContextTx** (`chat.go:218`): Deactivates context, preserves messages/tools (logs cleanup)
+- **SaveMessage** (`message.go:17`): Stores message with `session_id` for isolation
+- **GetRecentMessagesBySession** (`message.go:65`): Session-scoped message retrieval
 
 ### Claude CLI Execution
 **Command** (`process.go:176`):
@@ -367,9 +369,9 @@ if strings.HasPrefix(msg.Text, "/") {
 
 ### Database Schema
 - **chat_contexts**: `chat_id UNIQUE`, enables INSERT OR REPLACE
-- **messages**: CASCADE DELETE on chat_id
-- **tool_executions**: CASCADE DELETE on chat_id
-- **cleanup_log**: No cascade (historical audit)
+- **messages**: Has `session_id` for isolation; data preserved on cleanup (not deleted)
+- **tool_executions**: Has `session_id` for isolation; data preserved on cleanup (not deleted)
+- **cleanup_log**: Historical audit trail for session lifecycle events
 
 ### Critical File Locations
 

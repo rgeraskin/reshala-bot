@@ -205,14 +205,16 @@ func (s *Storage) UpdateClaudeSessionID(chatID, claudeSessionID string) error {
 	return nil
 }
 
-// CleanupResult holds the result of a transactional cleanup operation
+// CleanupResult holds the result of a transactional cleanup operation.
+// MessagesPreserved and ToolsPreserved indicate counts that were kept (not deleted).
 type CleanupResult struct {
-	MessagesDeleted int
-	ToolsDeleted    int
+	MessagesPreserved int
+	ToolsPreserved    int
 }
 
-// CleanupContextTx performs all cleanup operations for a chat in a single transaction.
-// This ensures atomic cleanup - either all operations succeed or none do.
+// CleanupContextTx deactivates a chat context while preserving all session data.
+// Messages and tool executions are kept for audit/analysis purposes.
+// Session isolation is maintained via session_id filtering in retrieval queries.
 func (s *Storage) CleanupContextTx(chatID, cleanupType string) (*CleanupResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -220,39 +222,25 @@ func (s *Storage) CleanupContextTx(chatID, cleanupType string) (*CleanupResult, 
 	}
 	defer tx.Rollback() // No-op if committed
 
-	// Delete messages
-	msgResult, err := tx.Exec(`DELETE FROM messages WHERE chat_id = ?`, chatID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to delete messages: %w", err)
-	}
-	messagesDeleted, err := msgResult.RowsAffected()
-	if err != nil {
-		// Log but don't fail - the delete succeeded, we just can't get the count
-		messagesDeleted = 0
-	}
+	// Count preserved messages (for logging purposes)
+	var messagesPreserved int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ?`, chatID).Scan(&messagesPreserved)
 
-	// Delete tool executions
-	toolResult, err := tx.Exec(`DELETE FROM tool_executions WHERE chat_id = ?`, chatID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to delete tool executions: %w", err)
-	}
-	toolsDeleted, err := toolResult.RowsAffected()
-	if err != nil {
-		// Log but don't fail - the delete succeeded, we just can't get the count
-		toolsDeleted = 0
-	}
+	// Count preserved tool executions (for logging purposes)
+	var toolsPreserved int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM tool_executions WHERE chat_id = ?`, chatID).Scan(&toolsPreserved)
 
-	// Deactivate context
+	// Deactivate context (data is preserved, not deleted)
 	_, err = tx.Exec(`UPDATE chat_contexts SET is_active = 0 WHERE chat_id = ?`, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deactivate context: %w", err)
 	}
 
-	// Log cleanup
+	// Log cleanup (with 0 deleted since we preserve data)
 	_, err = tx.Exec(`
 		INSERT INTO cleanup_log (chat_id, cleanup_type, messages_deleted, tools_deleted, created_at)
 		VALUES (?, ?, ?, ?, ?)
-	`, chatID, cleanupType, messagesDeleted, toolsDeleted, time.Now())
+	`, chatID, cleanupType, 0, 0, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("failed to log cleanup: %w", err)
 	}
@@ -262,7 +250,7 @@ func (s *Storage) CleanupContextTx(chatID, cleanupType string) (*CleanupResult, 
 	}
 
 	return &CleanupResult{
-		MessagesDeleted: int(messagesDeleted),
-		ToolsDeleted:    int(toolsDeleted),
+		MessagesPreserved: messagesPreserved,
+		ToolsPreserved:    toolsPreserved,
 	}, nil
 }

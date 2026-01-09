@@ -94,8 +94,8 @@ func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext, cleanupType str
 
 	slog.Info("Cleaned up context",
 		"chat_id", ctx.ChatID,
-		"messages_deleted", result.MessagesDeleted,
-		"tools_deleted", result.ToolsDeleted)
+		"messages_preserved", result.MessagesPreserved,
+		"tools_preserved", result.ToolsPreserved)
 
 	return nil
 }
