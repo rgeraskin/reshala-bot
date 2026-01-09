@@ -45,15 +45,7 @@ func main() {
 	sanitizer := security.NewSanitizer(cfg.Security.SecretPatterns)
 	slog.Info("Security sanitizer initialized", "patterns_count", len(cfg.Security.SecretPatterns))
 
-	contextManager := ctx.NewManager(store, cfg.Context.TTL)
-	slog.Info("Context manager initialized", "ttl", cfg.Context.TTL)
-
-	validator, err := ctx.NewValidator(store, cfg.Claude.ProjectPath, cfg.Context.ValidationEnabled)
-	if err != nil {
-		slog.Warn("Validator initialization failed", "error", err)
-	}
-	slog.Info("Context validator initialized", "enabled", cfg.Context.ValidationEnabled)
-
+	// SessionManager must be created before ContextManager (used to cleanup orphaned sessions)
 	sessionManager := claude.NewSessionManager(
 		cfg.Claude.CLIPath,
 		cfg.Claude.ProjectPath,
@@ -64,6 +56,15 @@ func main() {
 	slog.Info("Session manager initialized",
 		"max_sessions", cfg.Claude.MaxConcurrentSessions,
 		"timeout", cfg.Claude.QueryTimeout)
+
+	contextManager := ctx.NewManager(store, sessionManager, cfg.Context.TTL)
+	slog.Info("Context manager initialized", "ttl", cfg.Context.TTL)
+
+	validator, err := ctx.NewValidator(store, cfg.Claude.ProjectPath, cfg.Context.ValidationEnabled)
+	if err != nil {
+		slog.Warn("Validator initialization failed", "error", err)
+	}
+	slog.Info("Context validator initialized", "enabled", cfg.Context.ValidationEnabled)
 
 	executor := claude.NewExecutor(sessionManager, cfg.Claude.ProjectPath, cfg.Claude.QueryTimeout)
 	slog.Info("Claude executor initialized")

@@ -9,15 +9,22 @@ import (
 	"github.com/rg/aiops/internal/storage"
 )
 
-type Manager struct {
-	storage *storage.Storage
-	ttl     time.Duration
+// SessionKiller interface for killing sessions (avoids circular import with claude package)
+type SessionKiller interface {
+	KillSession(sessionID string) error
 }
 
-func NewManager(storage *storage.Storage, ttl time.Duration) *Manager {
+type Manager struct {
+	storage       *storage.Storage
+	sessionKiller SessionKiller
+	ttl           time.Duration
+}
+
+func NewManager(storage *storage.Storage, sessionKiller SessionKiller, ttl time.Duration) *Manager {
 	return &Manager{
-		storage: storage,
-		ttl:     ttl,
+		storage:       storage,
+		sessionKiller: sessionKiller,
+		ttl:           ttl,
 	}
 }
 
@@ -32,10 +39,20 @@ func (m *Manager) GetOrCreate(chatID, chatType string) (*storage.ChatContext, er
 			return ctx, nil
 		}
 
-		// Deactivate existing context (whether expired or inactive) before creating new one
+		// Context is expired or inactive - cleanup old session before creating new one
 		if ctx.IsActive {
 			slog.Info("Context expired, creating new one", "chat_id", chatID)
 		}
+
+		// Kill old session from SessionManager to prevent orphaning
+		if ctx.SessionID != "" && m.sessionKiller != nil {
+			if err := m.sessionKiller.KillSession(ctx.SessionID); err != nil {
+				slog.Debug("No session to cleanup", "session_id", ctx.SessionID, "error", err)
+			} else {
+				slog.Info("Killed orphaned session", "session_id", ctx.SessionID)
+			}
+		}
+
 		if err := m.storage.DeactivateContext(chatID); err != nil {
 			slog.Warn("Failed to deactivate context", "chat_id", chatID, "error", err)
 		}
