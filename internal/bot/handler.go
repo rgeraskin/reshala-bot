@@ -2,7 +2,7 @@ package bot
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/rg/aiops/internal/claude"
@@ -52,11 +52,16 @@ func NewHandler(
 }
 
 func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
-	log.Printf("Received message from chat %s (user %s): %s", msg.ChatID, msg.From.ID, truncateText(msg.Text, 100))
+	slog.Info("Received message",
+		"chat_id", msg.ChatID,
+		"user_id", msg.From.ID,
+		"text", truncateText(msg.Text, 100))
 
 	// Check whitelist - can contain both user IDs and chat/group IDs
 	if !h.allowedChatIDs[msg.ChatID] && !h.allowedChatIDs[msg.From.ID] {
-		log.Printf("Ignoring message from non-whitelisted chat %s / user %s", msg.ChatID, msg.From.ID)
+		slog.Warn("Ignoring non-whitelisted message",
+			"chat_id", msg.ChatID,
+			"user_id", msg.From.ID)
 		return nil
 	}
 
@@ -71,23 +76,23 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	}
 
 	if err := h.contextManager.Refresh(msg.ChatID); err != nil {
-		log.Printf("Failed to refresh context: %v", err)
+		slog.Warn("Failed to refresh context", "chat_id", msg.ChatID, "error", err)
 	}
 
 	if err := h.storage.SaveMessage(msg.ChatID, "user", msg.Text); err != nil {
-		log.Printf("Failed to save user message: %v", err)
+		slog.Warn("Failed to save user message", "chat_id", msg.ChatID, "error", err)
 	}
 
 	valid, reason, err := h.validator.ValidateQuery(ctx, msg.Text)
 	if err != nil {
-		log.Printf("Validation error: %v", err)
+		slog.Warn("Validation error", "chat_id", msg.ChatID, "error", err)
 	}
 	if !valid && reason != "" {
 		return h.platform.SendMessage(msg.ChatID, fmt.Sprintf("⚠️ %s", reason))
 	}
 
 	if err := h.platform.SendTyping(msg.ChatID); err != nil {
-		log.Printf("Failed to send typing indicator: %v", err)
+		slog.Warn("Failed to send typing indicator", "chat_id", msg.ChatID, "error", err)
 	}
 
 	_, err = h.processManager.GetOrCreateProcess(msg.ChatID, ctx.SessionID)
@@ -97,20 +102,23 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 
 	response, err := h.executor.Execute(ctx.SessionID, msg.Text)
 	if err != nil {
-		log.Printf("Execution error: %v", err)
+		slog.Error("Execution error", "chat_id", msg.ChatID, "session_id", ctx.SessionID, "error", err)
 		return h.sendError(msg.ChatID, "Failed to execute query. The service may be temporarily unavailable.")
 	}
 
 	sanitized := h.sanitizer.Sanitize(response)
 
 	if err := h.storage.SaveMessage(msg.ChatID, "assistant", sanitized); err != nil {
-		log.Printf("Failed to save assistant message: %v", err)
+		slog.Warn("Failed to save assistant message", "chat_id", msg.ChatID, "error", err)
 	}
 
 	tools := claude.ExtractToolExecutions(response)
 	for _, tool := range tools {
 		if err := h.storage.SaveToolExecution(msg.ChatID, tool.ToolName, tool.Status); err != nil {
-			log.Printf("Failed to save tool execution: %v", err)
+			slog.Warn("Failed to save tool execution",
+				"chat_id", msg.ChatID,
+				"tool", tool.ToolName,
+				"error", err)
 		}
 	}
 

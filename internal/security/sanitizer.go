@@ -2,7 +2,7 @@ package security
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -16,7 +16,7 @@ func NewSanitizer(patterns []string) *Sanitizer {
 	for _, pattern := range patterns {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			log.Printf("Warning: failed to compile pattern %q: %v", pattern, err)
+			slog.Warn("Failed to compile security pattern", "pattern", pattern, "error", err)
 			continue
 		}
 		compiled = append(compiled, re)
@@ -38,7 +38,7 @@ func (s *Sanitizer) Sanitize(text string) string {
 	}
 
 	if redacted {
-		log.Printf("Security: Redacted sensitive information from output")
+		slog.Info("Security: Redacted sensitive information from output")
 	}
 
 	return result

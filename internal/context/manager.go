@@ -2,7 +2,7 @@ package context
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,11 +27,18 @@ func (m *Manager) GetOrCreate(chatID, chatType string) (*storage.ChatContext, er
 		return nil, fmt.Errorf("failed to get context: %w", err)
 	}
 
-	if ctx != nil && ctx.IsActive {
-		if time.Now().Before(ctx.ExpiresAt) {
+	if ctx != nil {
+		if ctx.IsActive && time.Now().Before(ctx.ExpiresAt) {
 			return ctx, nil
 		}
-		log.Printf("Context for chat %s has expired, creating new one", chatID)
+
+		// Deactivate existing context (whether expired or inactive) before creating new one
+		if ctx.IsActive {
+			slog.Info("Context expired, creating new one", "chat_id", chatID)
+		}
+		if err := m.storage.DeactivateContext(chatID); err != nil {
+			slog.Warn("Failed to deactivate context", "chat_id", chatID, "error", err)
+		}
 	}
 
 	sessionID := uuid.New().String()
@@ -40,7 +47,7 @@ func (m *Manager) GetOrCreate(chatID, chatType string) (*storage.ChatContext, er
 		return nil, fmt.Errorf("failed to create context: %w", err)
 	}
 
-	log.Printf("Created new context for chat %s with session %s", chatID, ctx.SessionID)
+	slog.Info("Created new context", "chat_id", chatID, "session_id", ctx.SessionID)
 	return ctx, nil
 }
 
@@ -55,7 +62,7 @@ func (m *Manager) Deactivate(chatID string) error {
 	if err := m.storage.DeactivateContext(chatID); err != nil {
 		return fmt.Errorf("failed to deactivate context: %w", err)
 	}
-	log.Printf("Deactivated context for chat %s", chatID)
+	slog.Info("Deactivated context", "chat_id", chatID)
 	return nil
 }
 

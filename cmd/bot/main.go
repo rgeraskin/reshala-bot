@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,34 +17,42 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Starting aiops bot...")
+	// Initialize structured logger
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+		AddSource: true,
+	}))
+	slog.SetDefault(logger)
+
+	slog.Info("Starting aiops bot")
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		slog.Error("Failed to load config", "error", err)
+		os.Exit(1)
 	}
 
-	log.Printf("%s", cfg)
+	slog.Info("Configuration loaded", "config", cfg)
 
 	store, err := storage.NewStorage(cfg.Storage.DBPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize storage: %v", err)
+		slog.Error("Failed to initialize storage", "error", err)
+		os.Exit(1)
 	}
 	defer store.Close()
-	log.Println("Database initialized successfully")
+	slog.Info("Database initialized successfully")
 
 	sanitizer := security.NewSanitizer(cfg.Security.SecretPatterns)
-	log.Printf("Security sanitizer initialized with %d patterns", len(cfg.Security.SecretPatterns))
+	slog.Info("Security sanitizer initialized", "patterns_count", len(cfg.Security.SecretPatterns))
 
 	contextManager := ctx.NewManager(store, cfg.Context.TTL)
-	log.Printf("Context manager initialized (TTL: %v)", cfg.Context.TTL)
+	slog.Info("Context manager initialized", "ttl", cfg.Context.TTL)
 
 	validator, err := ctx.NewValidator(store, cfg.Claude.ProjectPath, cfg.Context.ValidationEnabled)
 	if err != nil {
-		log.Printf("Warning: validator initialization failed: %v", err)
+		slog.Warn("Validator initialization failed", "error", err)
 	}
-	log.Printf("Context validator initialized (enabled: %v)", cfg.Context.ValidationEnabled)
+	slog.Info("Context validator initialized", "enabled", cfg.Context.ValidationEnabled)
 
 	processManager := claude.NewProcessManager(
 		cfg.Claude.CLIPath,
@@ -52,24 +60,26 @@ func main() {
 		cfg.Claude.MaxConcurrentSessions,
 		cfg.Claude.QueryTimeout,
 	)
-	log.Printf("Process manager initialized (max sessions: %d, timeout: %v)",
-		cfg.Claude.MaxConcurrentSessions, cfg.Claude.QueryTimeout)
+	slog.Info("Process manager initialized",
+		"max_sessions", cfg.Claude.MaxConcurrentSessions,
+		"timeout", cfg.Claude.QueryTimeout)
 
 	executor := claude.NewExecutor(processManager, cfg.Claude.ProjectPath, cfg.Claude.QueryTimeout)
-	log.Println("Claude executor initialized")
+	slog.Info("Claude executor initialized")
 
 	expiryWorker := ctx.NewExpiryWorker(store, processManager, cfg.Context.CleanupInterval)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 
 	go expiryWorker.Start(workerCtx)
-	log.Printf("Expiry worker started (interval: %v)", cfg.Context.CleanupInterval)
+	slog.Info("Expiry worker started", "interval", cfg.Context.CleanupInterval)
 
 	platform, err := telegram.NewClient(cfg.Telegram.Token)
 	if err != nil {
-		log.Fatalf("Failed to create Telegram client: %v", err)
+		slog.Error("Failed to create Telegram client", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Telegram client initialized")
+	slog.Info("Telegram client initialized")
 
 	handler := bot.NewHandler(
 		platform,
@@ -81,26 +91,26 @@ func main() {
 		store,
 		cfg.Telegram.AllowedChatIDs,
 	)
-	log.Printf("Bot handler initialized (whitelist: %d allowed IDs)", len(cfg.Telegram.AllowedChatIDs))
+	slog.Info("Bot handler initialized", "allowed_chats", len(cfg.Telegram.AllowedChatIDs))
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		sig := <-sigChan
-		log.Printf("Received signal %v, shutting down gracefully...", sig)
+		slog.Info("Received shutdown signal", "signal", sig)
 		cancelWorker()
 
 		activeCount := processManager.GetActiveProcessCount()
-		log.Printf("Cleaning up %d active processes...", activeCount)
+		slog.Info("Cleaning up active processes", "count", activeCount)
 
 		os.Exit(0)
 	}()
 
-	log.Println("Bot is ready to receive messages!")
-	log.Println("Add the bot to a Telegram group/channel to start using it")
+	slog.Info("Bot is ready to receive messages")
 
 	if err := platform.Start(handler.HandleMessage); err != nil {
-		log.Fatalf("Bot stopped with error: %v", err)
+		slog.Error("Bot stopped with error", "error", err)
+		os.Exit(1)
 	}
 }

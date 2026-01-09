@@ -22,7 +22,7 @@ func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Dur
 	expiresAt := now.Add(ttl)
 
 	result, err := s.db.Exec(`
-		INSERT INTO chat_contexts (chat_id, chat_type, session_id, created_at, last_interaction, expires_at, is_active)
+		INSERT OR REPLACE INTO chat_contexts (chat_id, chat_type, session_id, created_at, last_interaction, expires_at, is_active)
 		VALUES (?, ?, ?, ?, ?, ?, 1)
 	`, chatID, chatType, sessionID, now, now, expiresAt)
 	if err != nil {

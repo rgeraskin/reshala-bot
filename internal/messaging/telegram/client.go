@@ -2,7 +2,7 @@ package telegram
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -21,7 +21,7 @@ func NewClient(token string) (*Client, error) {
 	}
 
 	bot.Debug = false
-	log.Printf("Authorized on account %s", bot.Self.UserName)
+	slog.Info("Authorized on Telegram account", "username", bot.Self.UserName)
 
 	return &Client{
 		bot: bot,
@@ -84,7 +84,7 @@ func (c *Client) GetChatType(chatID string) (messaging.ChatType, error) {
 func (c *Client) IsGroupOrChannel(chatID string) bool {
 	chatType, err := c.GetChatType(chatID)
 	if err != nil {
-		log.Printf("Failed to get chat type for %s: %v", chatID, err)
+		slog.Warn("Failed to get chat type", "chat_id", chatID, "error", err)
 		return false
 	}
 	return chatType.IsGroupOrChannel()
@@ -96,7 +96,7 @@ func (c *Client) Start(handler messaging.MessageHandler) error {
 
 	updates := c.bot.GetUpdatesChan(u)
 
-	log.Println("Telegram bot started, listening for messages...")
+	slog.Info("Telegram bot started, listening for messages")
 
 	for update := range updates {
 		if update.Message == nil {
@@ -105,7 +105,7 @@ func (c *Client) Start(handler messaging.MessageHandler) error {
 
 		msg := convertMessage(update.Message)
 		if err := handler(msg); err != nil {
-			log.Printf("Error handling message: %v", err)
+			slog.Error("Error handling message", "error", err)
 		}
 	}
 

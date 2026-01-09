@@ -1,2 +1,6 @@
 [env]
 _.file = ".env"
+_.python.venv = { path = ".venv", create = true }
+
+[settings]
+python.uv_venv_auto = true

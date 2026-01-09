@@ -2,7 +2,7 @@ package context
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/rg/aiops/internal/claude"
@@ -10,16 +10,16 @@ import (
 )
 
 type ExpiryWorker struct {
-	storage       *storage.Storage
+	storage        *storage.Storage
 	processManager *claude.ProcessManager
-	interval      time.Duration
+	interval       time.Duration
 }
 
 func NewExpiryWorker(storage *storage.Storage, pm *claude.ProcessManager, interval time.Duration) *ExpiryWorker {
 	return &ExpiryWorker{
-		storage:       storage,
+		storage:        storage,
 		processManager: pm,
-		interval:      interval,
+		interval:       interval,
 	}
 }
 
@@ -27,16 +27,16 @@ func (ew *ExpiryWorker) Start(ctx context.Context) {
 	ticker := time.NewTicker(ew.interval)
 	defer ticker.Stop()
 
-	log.Printf("Starting expiry worker with interval %v", ew.interval)
+	slog.Info("Starting expiry worker", "interval", ew.interval)
 
 	for {
 		select {
 		case <-ticker.C:
 			if err := ew.cleanupExpired(); err != nil {
-				log.Printf("Error during cleanup: %v", err)
+				slog.Error("Error during cleanup", "error", err)
 			}
 		case <-ctx.Done():
-			log.Println("Expiry worker stopped")
+			slog.Info("Expiry worker stopped")
 			return
 		}
 	}
@@ -52,11 +52,11 @@ func (ew *ExpiryWorker) cleanupExpired() error {
 		return nil
 	}
 
-	log.Printf("Found %d expired contexts to clean up", len(expiredContexts))
+	slog.Info("Found expired contexts to clean up", "count", len(expiredContexts))
 
 	for _, ctx := range expiredContexts {
 		if err := ew.cleanupContext(ctx); err != nil {
-			log.Printf("Failed to cleanup context for chat %s: %v", ctx.ChatID, err)
+			slog.Warn("Failed to cleanup context", "chat_id", ctx.ChatID, "error", err)
 			continue
 		}
 	}
@@ -65,20 +65,20 @@ func (ew *ExpiryWorker) cleanupExpired() error {
 }
 
 func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext) error {
-	log.Printf("Cleaning up expired context for chat %s (session %s)", ctx.ChatID, ctx.SessionID)
+	slog.Info("Cleaning up expired context", "chat_id", ctx.ChatID, "session_id", ctx.SessionID)
 
 	if err := ew.processManager.KillProcess(ctx.SessionID); err != nil {
-		log.Printf("Warning: failed to kill process for session %s: %v", ctx.SessionID, err)
+		slog.Warn("Failed to kill process", "session_id", ctx.SessionID, "error", err)
 	}
 
 	messagesDeleted, err := ew.storage.DeleteMessagesByChat(ctx.ChatID)
 	if err != nil {
-		log.Printf("Warning: failed to delete messages for chat %s: %v", ctx.ChatID, err)
+		slog.Warn("Failed to delete messages", "chat_id", ctx.ChatID, "error", err)
 	}
 
 	toolsDeleted, err := ew.storage.DeleteToolExecutionsByChat(ctx.ChatID)
 	if err != nil {
-		log.Printf("Warning: failed to delete tool executions for chat %s: %v", ctx.ChatID, err)
+		slog.Warn("Failed to delete tool executions", "chat_id", ctx.ChatID, "error", err)
 	}
 
 	if err := ew.storage.DeactivateContext(ctx.ChatID); err != nil {
@@ -86,11 +86,13 @@ func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext) error {
 	}
 
 	if err := ew.storage.LogCleanup(ctx.ChatID, "expired", messagesDeleted, toolsDeleted); err != nil {
-		log.Printf("Warning: failed to log cleanup for chat %s: %v", ctx.ChatID, err)
+		slog.Warn("Failed to log cleanup", "chat_id", ctx.ChatID, "error", err)
 	}
 
-	log.Printf("Cleaned up context for chat %s (deleted %d messages, %d tool executions)",
-		ctx.ChatID, messagesDeleted, toolsDeleted)
+	slog.Info("Cleaned up context",
+		"chat_id", ctx.ChatID,
+		"messages_deleted", messagesDeleted,
+		"tools_deleted", toolsDeleted)
 
 	return nil
 }

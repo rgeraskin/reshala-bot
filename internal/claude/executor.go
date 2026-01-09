@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,7 +25,7 @@ func NewExecutor(pm *ProcessManager, projectPath string, timeout time.Duration) 
 }
 
 func (e *Executor) Execute(sessionID, query string) (string, error) {
-	log.Printf("Executing query for session %s: %s", sessionID, truncateQuery(query))
+	slog.Info("Executing query", "session_id", sessionID, "query", truncateQuery(query))
 
 	response, err := e.pm.ExecuteQuery(sessionID, query)
 	if err != nil {

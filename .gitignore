@@ -46,3 +46,5 @@ Thumbs.db
 /dist/
 /build/
 configs/config.local.yaml
+.venv
+tg_session.session
