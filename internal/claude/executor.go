@@ -21,7 +21,11 @@ func NewExecutor(sm *SessionManager, projectPath string, timeout time.Duration) 
 }
 
 func (e *Executor) Execute(sessionID, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
-	slog.Info("Executing query", "session_id", sessionID, "query", truncateQuery(query))
+	logQuery := query
+	if len(logQuery) > 100 {
+		logQuery = logQuery[:100] + "..."
+	}
+	slog.Info("Executing query", "session_id", sessionID, "query", logQuery)
 
 	response, err := e.sm.ExecuteQuery(sessionID, query, claudeSessionID)
 	if err != nil {
@@ -29,11 +33,4 @@ func (e *Executor) Execute(sessionID, query string, claudeSessionID string) (*Cl
 	}
 
 	return response, nil
-}
-
-func truncateQuery(query string) string {
-	if len(query) > 100 {
-		return query[:100] + "..."
-	}
-	return query
 }
