@@ -42,7 +42,11 @@ func main() {
 	defer store.Close()
 	slog.Info("Database initialized successfully")
 
-	sanitizer := security.NewSanitizer(cfg.Security.SecretPatterns)
+	sanitizer, err := security.NewSanitizer(cfg.Security.SecretPatterns)
+	if err != nil {
+		slog.Error("Failed to initialize sanitizer", "error", err)
+		os.Exit(1)
+	}
 	slog.Info("Security sanitizer initialized", "patterns_count", len(cfg.Security.SecretPatterns))
 
 	// SessionManager must be created before ContextManager (used to cleanup orphaned sessions)

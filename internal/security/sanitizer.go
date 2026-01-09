@@ -11,19 +11,18 @@ type Sanitizer struct {
 	patterns []*regexp.Regexp
 }
 
-func NewSanitizer(patterns []string) *Sanitizer {
+func NewSanitizer(patterns []string) (*Sanitizer, error) {
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
 	for _, pattern := range patterns {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			slog.Warn("Failed to compile security pattern", "pattern", pattern, "error", err)
-			continue
+			return nil, fmt.Errorf("invalid security pattern %q: %w", pattern, err)
 		}
 		compiled = append(compiled, re)
 	}
 	return &Sanitizer{
 		patterns: compiled,
-	}
+	}, nil
 }
 
 func (s *Sanitizer) Sanitize(text string) string {
