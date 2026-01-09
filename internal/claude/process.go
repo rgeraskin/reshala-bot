@@ -95,13 +95,12 @@ func (sm *SessionManager) ValidateCLI() error {
 
 // GetOrCreateSession returns an existing session or creates a new one.
 // This is a lightweight operation - no OS processes are spawned.
+// Note: LastUsed is only updated in ExecuteQuery to avoid race conditions.
 func (sm *SessionManager) GetOrCreateSession(chatID, sessionID string) (*Session, error) {
 	sm.mu.RLock()
 	if session, exists := sm.sessions[sessionID]; exists {
 		sm.mu.RUnlock()
-		session.mu.Lock()
-		session.LastUsed = time.Now()
-		session.mu.Unlock()
+		// Don't update LastUsed here - ExecuteQuery handles it to avoid race
 		return session, nil
 	}
 	sm.mu.RUnlock()
@@ -111,9 +110,7 @@ func (sm *SessionManager) GetOrCreateSession(chatID, sessionID string) (*Session
 
 	// Double-check after acquiring write lock
 	if session, exists := sm.sessions[sessionID]; exists {
-		session.mu.Lock()
-		session.LastUsed = time.Now()
-		session.mu.Unlock()
+		// Don't update LastUsed here - ExecuteQuery handles it to avoid race
 		return session, nil
 	}
 
