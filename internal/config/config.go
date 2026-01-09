@@ -73,7 +73,7 @@ func Load() (*Config, error) {
 
 func (c *Config) validate() error {
 	if c.Telegram.Token == "" {
-		return fmt.Errorf("telegram.token is required")
+		return fmt.Errorf("telegram.token is required (check TELEGRAM_BOT_TOKEN env var)")
 	}
 	if len(c.Telegram.AllowedChatIDs) == 0 {
 		return fmt.Errorf("telegram.allowed_chat_ids is required (at least one user or chat ID)")
@@ -99,6 +99,29 @@ func (c *Config) validate() error {
 	if c.Storage.DBPath == "" {
 		return fmt.Errorf("storage.db_path is required")
 	}
+
+	// Validate CLI path exists and is executable
+	if info, err := os.Stat(c.Claude.CLIPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("claude.cli_path does not exist: %s", c.Claude.CLIPath)
+		}
+		return fmt.Errorf("claude.cli_path stat failed: %w", err)
+	} else if info.IsDir() {
+		return fmt.Errorf("claude.cli_path is a directory, not a file: %s", c.Claude.CLIPath)
+	} else if info.Mode()&0111 == 0 {
+		return fmt.Errorf("claude.cli_path is not executable: %s", c.Claude.CLIPath)
+	}
+
+	// Validate project path exists and is a directory
+	if info, err := os.Stat(c.Claude.ProjectPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("claude.project_path does not exist: %s", c.Claude.ProjectPath)
+		}
+		return fmt.Errorf("claude.project_path stat failed: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("claude.project_path is not a directory: %s", c.Claude.ProjectPath)
+	}
+
 	return nil
 }
 
