@@ -2,7 +2,7 @@ package slack
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/rg/aiops/internal/messaging"
 )
@@ -16,7 +16,7 @@ func NewClient(token string) (*Client, error) {
 		return nil, fmt.Errorf("slack token is required")
 	}
 
-	log.Println("Slack client initialized (stub implementation)")
+	slog.Info("Slack client initialized (stub implementation)")
 
 	return &Client{
 		token: token,
