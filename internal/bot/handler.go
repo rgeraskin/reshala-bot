@@ -13,6 +13,13 @@ import (
 	"github.com/rg/aiops/internal/storage"
 )
 
+const (
+	// maxTelegramMessageLen is Telegram's maximum message length
+	maxTelegramMessageLen = 4000
+	// maxHistoryContentLen is the max length for message content in /history output
+	maxHistoryContentLen = 500
+)
+
 type Handler struct {
 	platform       messaging.Platform
 	contextManager *context.Manager
@@ -95,7 +102,6 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			return h.handleHelpCommand(msg.ChatID)
 		case "/history":
 			return h.handleHistoryCommand(msg.ChatID)
-		// Future commands can be added here
 		default:
 			// Unknown slash command - return helpful message
 			return h.platform.SendMessage(msg.ChatID,
@@ -191,7 +197,7 @@ func (h *Handler) sendResponse(chatID, text string) error {
 		text = "I received your message but have no response to provide."
 	}
 
-	chunks := splitResponse(text, 4000)
+	chunks := splitResponse(text, maxTelegramMessageLen)
 	for i, chunk := range chunks {
 		if err := h.platform.SendMessage(chatID, chunk); err != nil {
 			return fmt.Errorf("failed to send response chunk %d: %w", i+1, err)
@@ -493,8 +499,8 @@ func formatHistoryResponse(ctx *storage.ChatContext, messages []*storage.Message
 
 		// Truncate very long messages
 		content := msg.Content
-		if len(content) > 500 {
-			content = content[:500] + "\n[... truncated ...]"
+		if len(content) > maxHistoryContentLen {
+			content = content[:maxHistoryContentLen] + "\n[... truncated ...]"
 		}
 
 		b.WriteString(content)
