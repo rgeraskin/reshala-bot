@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strings"
 )
 
 type Sanitizer struct {
@@ -43,34 +42,6 @@ func (s *Sanitizer) Sanitize(text string) string {
 	return result
 }
 
-func (s *Sanitizer) SanitizeMultiple(texts ...string) []string {
-	result := make([]string, len(texts))
-	for i, text := range texts {
-		result[i] = s.Sanitize(text)
-	}
-	return result
-}
-
-func (s *Sanitizer) ContainsSensitiveData(text string) bool {
-	for _, pattern := range s.patterns {
-		if pattern.MatchString(text) {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Sanitizer) Validate() error {
-	if len(s.patterns) == 0 {
-		return fmt.Errorf("no security patterns configured")
-	}
-	return nil
-}
-
-func (s *Sanitizer) String() string {
-	return fmt.Sprintf("Sanitizer with %d patterns", len(s.patterns))
-}
-
 var DefaultPatterns = []string{
 	`api[_-]?key[s]?\s*[:=]\s*["']?([^"'\s]+)`,
 	`token[s]?\s*[:=]\s*["']?([^"'\s]+)`,
@@ -79,24 +50,4 @@ var DefaultPatterns = []string{
 	`[A-Za-z0-9+/]{40,}={0,2}`,
 	`xox[pboa]-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[a-z0-9]{32}`,
 	`eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+`,
-}
-
-func SanitizeEnvVars(envVars []string, allowList []string) []string {
-	allowed := make(map[string]bool)
-	for _, key := range allowList {
-		allowed[key] = true
-	}
-
-	result := make([]string, 0, len(envVars))
-	for _, env := range envVars {
-		parts := strings.SplitN(env, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := parts[0]
-		if allowed[key] {
-			result = append(result, env)
-		}
-	}
-	return result
 }
