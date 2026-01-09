@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rg/aiops/internal/bot"
 	"github.com/rg/aiops/internal/claude"
@@ -113,10 +114,43 @@ func main() {
 	go func() {
 		sig := <-sigChan
 		slog.Info("Received shutdown signal", "signal", sig)
+
+		// Create shutdown context with 30 second timeout
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		// Cancel expiry worker
 		cancelWorker()
 
 		activeCount := sessionManager.GetActiveSessionCount()
-		slog.Info("Cleaning up active sessions", "count", activeCount)
+		slog.Info("Waiting for active sessions to complete", "count", activeCount, "timeout", "30s")
+
+		// Wait for active queries to complete (with timeout)
+		done := make(chan struct{})
+		go func() {
+			// Poll until no active sessions or timeout
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if sessionManager.GetActiveSessionCount() == 0 {
+						close(done)
+						return
+					}
+				case <-shutdownCtx.Done():
+					return
+				}
+			}
+		}()
+
+		select {
+		case <-done:
+			slog.Info("Graceful shutdown complete - all sessions finished")
+		case <-shutdownCtx.Done():
+			remaining := sessionManager.GetActiveSessionCount()
+			slog.Warn("Shutdown timeout exceeded, forcing exit", "remaining_sessions", remaining)
+		}
 
 		// Stop Telegram client gracefully
 		platform.Stop()
