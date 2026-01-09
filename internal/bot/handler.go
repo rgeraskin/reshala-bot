@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/rg/aiops/internal/claude"
 	"github.com/rg/aiops/internal/context"
@@ -74,6 +75,12 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		switch cmd {
 		case "/new":
 			return h.handleNewCommand(msg.ChatID)
+		case "/status":
+			return h.handleStatusCommand(msg.ChatID)
+		case "/help":
+			return h.handleHelpCommand(msg.ChatID)
+		case "/history":
+			return h.handleHistoryCommand(msg.ChatID)
 		// Future commands can be added here
 		default:
 			// Let other slash commands pass through to Claude
@@ -188,6 +195,73 @@ func (h *Handler) handleNewCommand(chatID string) error {
 		"✅ Session reset complete! Your next message will start a fresh conversation with Claude.")
 }
 
+func (h *Handler) handleStatusCommand(chatID string) error {
+	slog.Info("Processing /status command", "chat_id", chatID)
+
+	// Get context
+	ctx, err := h.storage.GetContext(chatID)
+	if err != nil {
+		slog.Error("Failed to get context for /status", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to retrieve session status.")
+	}
+
+	if ctx == nil || !ctx.IsActive {
+		return h.platform.SendMessage(chatID,
+			"ℹ️ No active session. Send a message to start a new conversation with Claude.")
+	}
+
+	// Get message count
+	msgCount, err := h.storage.GetMessageCount(chatID)
+	if err != nil {
+		slog.Warn("Failed to get message count", "chat_id", chatID, "error", err)
+		msgCount = 0
+	}
+
+	// Get tool execution count
+	tools, err := h.storage.GetToolExecutions(chatID, 1000)
+	if err != nil {
+		slog.Warn("Failed to get tool executions", "chat_id", chatID, "error", err)
+		tools = []*storage.ToolExecution{}
+	}
+
+	response := formatStatusResponse(ctx, msgCount, len(tools))
+	return h.platform.SendMessage(chatID, response)
+}
+
+func (h *Handler) handleHelpCommand(chatID string) error {
+	slog.Info("Processing /help command", "chat_id", chatID)
+	return h.platform.SendMessage(chatID, getHelpText())
+}
+
+func (h *Handler) handleHistoryCommand(chatID string) error {
+	slog.Info("Processing /history command", "chat_id", chatID)
+
+	ctx, err := h.storage.GetContext(chatID)
+	if err != nil {
+		slog.Error("Failed to get context for /history", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to retrieve conversation history.")
+	}
+
+	if ctx == nil {
+		return h.platform.SendMessage(chatID,
+			"📜 No conversation history found. Start chatting to build history!")
+	}
+
+	messages, err := h.storage.GetRecentMessages(chatID, 1000)
+	if err != nil {
+		slog.Error("Failed to get messages for /history", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to retrieve messages.")
+	}
+
+	if len(messages) == 0 {
+		return h.platform.SendMessage(chatID,
+			"📜 Session exists but no messages yet. Send a message to start!")
+	}
+
+	response := formatHistoryResponse(ctx, messages)
+	return h.sendResponse(chatID, response)
+}
+
 func truncateText(text string, maxLen int) string {
 	if len(text) <= maxLen {
 		return text
@@ -235,4 +309,141 @@ func splitResponse(text string, maxLen int) []string {
 	}
 
 	return chunks
+}
+
+func formatStatusResponse(ctx *storage.ChatContext, msgCount, toolCount int) string {
+	var b strings.Builder
+
+	b.WriteString("📊 *Session Status*\n\n")
+
+	// Session IDs
+	b.WriteString(fmt.Sprintf("*Session ID:* `%s`\n", ctx.SessionID))
+	if ctx.ClaudeSessionID != "" {
+		b.WriteString(fmt.Sprintf("*Claude Session:* `%s`\n", ctx.ClaudeSessionID))
+	} else {
+		b.WriteString("*Claude Session:* Not yet initialized\n")
+	}
+
+	// Timing
+	b.WriteString("\n⏱️ *Timing*\n")
+	b.WriteString(fmt.Sprintf("Created: %s (%s)\n",
+		formatDuration(time.Since(ctx.CreatedAt)),
+		ctx.CreatedAt.Format("Jan 2, 3:04 PM")))
+	b.WriteString(fmt.Sprintf("Last active: %s\n",
+		formatDuration(time.Since(ctx.LastInteraction))))
+
+	if time.Now().Before(ctx.ExpiresAt) {
+		b.WriteString(fmt.Sprintf("Expires: in %s (%s)\n",
+			formatDuration(time.Until(ctx.ExpiresAt)),
+			ctx.ExpiresAt.Format("Jan 2, 3:04 PM")))
+	} else {
+		b.WriteString("Expires: ⚠️ Session expired\n")
+	}
+
+	// Activity
+	b.WriteString("\n💬 *Activity*\n")
+	b.WriteString(fmt.Sprintf("Messages: %d\n", msgCount))
+	b.WriteString(fmt.Sprintf("Tools used: %d executions\n", toolCount))
+
+	// Status
+	if ctx.IsActive && time.Now().Before(ctx.ExpiresAt) {
+		b.WriteString("\n*Status:* ✅ Active")
+	} else {
+		b.WriteString("\n*Status:* ⚠️ Inactive - send a message to start fresh")
+	}
+
+	return b.String()
+}
+
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		return "just now"
+	}
+
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		if minutes > 0 {
+			return fmt.Sprintf("%dh %dm ago", hours, minutes)
+		}
+		return fmt.Sprintf("%dh ago", hours)
+	}
+
+	if minutes > 0 {
+		return fmt.Sprintf("%dm ago", minutes)
+	}
+
+	if seconds > 5 {
+		return fmt.Sprintf("%ds ago", seconds)
+	}
+
+	return "just now"
+}
+
+func getHelpText() string {
+	return `🤖 *AIOps Bot - Available Commands*
+
+/status - Show session information and statistics
+/help - Display this help message
+/history - Export conversation history
+/new - Reset session and start fresh
+
+💡 *Usage Tips*
+• Sessions expire after 2 hours of inactivity
+• Each message extends the session TTL
+• All MCP tools are read-only for safety
+• Bot only responds in whitelisted groups
+
+*For SRE operations, just ask naturally:*
+"Show pods in production"
+"Check ArgoCD app status"
+"Get recent Datadog alerts"
+"Search Jira for incidents"`
+}
+
+func formatHistoryResponse(ctx *storage.ChatContext, messages []*storage.Message) string {
+	var b strings.Builder
+
+	b.WriteString("📜 *Conversation History*\n\n")
+	b.WriteString(fmt.Sprintf("*Session:* `%s`\n", ctx.SessionID))
+
+	if len(messages) > 0 {
+		firstMsg := messages[0]
+		lastMsg := messages[len(messages)-1]
+		duration := lastMsg.CreatedAt.Sub(firstMsg.CreatedAt)
+
+		b.WriteString(fmt.Sprintf("*Period:* %s - %s (%s)\n",
+			firstMsg.CreatedAt.Format("Jan 2, 3:04 PM"),
+			lastMsg.CreatedAt.Format("3:04 PM"),
+			formatDuration(duration)))
+	}
+
+	b.WriteString(fmt.Sprintf("*Messages:* %d\n\n", len(messages)))
+	b.WriteString("---\n\n")
+
+	for _, msg := range messages {
+		roleLabel := "User"
+		if msg.Role == "assistant" {
+			roleLabel = "Assistant"
+		}
+
+		timestamp := msg.CreatedAt.Format("3:04 PM")
+		b.WriteString(fmt.Sprintf("*[%s] %s:*\n", timestamp, roleLabel))
+
+		// Truncate very long messages
+		content := msg.Content
+		if len(content) > 500 {
+			content = content[:500] + "\n[... truncated ...]"
+		}
+
+		b.WriteString(content)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("---\n\n")
+	b.WriteString("💡 Use /new to reset the session and start fresh")
+
+	return b.String()
 }
