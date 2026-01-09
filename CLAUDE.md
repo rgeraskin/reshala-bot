@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AIOps Telegram Bot - A secure Telegram bot that integrates with Claude Code CLI for SRE operations. The bot spawns isolated Claude Code CLI processes for each Telegram group conversation, providing intelligent assistance for Kubernetes, ArgoCD, Jira, GitHub, Datadog, and other SRE tools.
+AIOps Telegram Bot - A secure Telegram bot that integrates with Claude Code CLI for SRE operations. The bot executes one-shot Claude CLI queries for each Telegram group conversation, providing intelligent assistance for Kubernetes, ArgoCD, Jira, GitHub, Datadog, and other SRE tools.
 
 **Key Architecture Principles:**
-- **Per-chat isolation**: Each Telegram group gets its own Claude CLI process and workspace
+- **Per-chat isolation**: Each Telegram group gets its own Claude CLI session with isolated conversation history
 - **2-hour session TTL**: Automatic cleanup of inactive sessions to prevent resource leaks
 - **Security-first**: Output sanitization to prevent credential leakage, read-only MCP access
 - **Group-only access**: Bot ignores private messages by design
@@ -87,23 +87,23 @@ cmd/bot/main.go (entry point)
     ↓
 internal/bot/handler.go (message handler)
     ↓
-internal/claude/process_manager.go (spawns Claude CLI processes)
+internal/claude/process.go (SessionManager - executes Claude CLI queries)
     ↓
-internal/context/context_manager.go (session lifecycle)
+internal/context/manager.go (session lifecycle)
     ↓
 internal/storage/storage.go (SQLite persistence)
 ```
 
 ### Key Components
 
-**Process Management** (`internal/claude/`):
-- Each Telegram chat spawns its own Claude CLI process with isolated stdin/stdout
-- Processes are tracked by chat_id and automatically cleaned up on expiry
-- Max concurrent sessions enforced via semaphore (default: 20)
+**Session Management** (`internal/claude/`):
+- `SessionManager` tracks active sessions in memory (lightweight, no OS processes)
+- Each query executes as a one-shot `claude -p` CLI call
+- Concurrency controlled via semaphore on actual query execution (default: 20 concurrent queries)
 
 **Context Lifecycle** (`internal/context/`):
 - Background worker runs every 5 minutes to clean up expired sessions (2-hour TTL)
-- Context validation ensures queries relate to SRE operations before spawning Claude
+- Context validation ensures queries relate to SRE operations before executing Claude
 - Session state tracked in SQLite with `is_active`, `created_at`, `expires_at`
 
 **Platform Abstraction** (`internal/messaging/`):
@@ -193,7 +193,7 @@ The bot requires a Claude workspace (`claude.project_path`) with:
 - **MCP read-only**: All MCP tools must be read-only (no kubectl apply/delete, no write operations)
 - **Output sanitization**: All Claude responses pass through security.SanitizeOutput()
 - **Group-only access**: Bot validates message type and ignores private chats
-- **Session isolation**: Each chat has separate Claude process with isolated environment
+- **Session isolation**: Each chat has separate Claude session with isolated conversation history
 
 ## Testing
 
@@ -285,15 +285,16 @@ slog.Info("Created new context", "chat_id", chatID, "session_id", sessionID)
 // Outputs: {"time":"...","level":"INFO","msg":"Created new context","chat_id":"123","session_id":"uuid"}
 ```
 
-### Process Management Pattern
+### Session Management Pattern
 
-The bot uses a **placeholder process** pattern because Claude CLI `--print` mode is one-shot:
+The bot uses a **lightweight session tracking** pattern:
 
-1. Create a dummy process (`sleep 86400`) to satisfy the process manager interface
-2. Execute actual queries via one-shot `claude -p` calls in `executeQuerySync`
-3. Track session state in the process manager for context isolation
+1. `SessionManager` tracks active sessions in memory (session ID, chat ID, timestamps)
+2. No OS processes are spawned for tracking - sessions are just in-memory structs
+3. Query execution uses one-shot `claude -p` CLI calls with `--resume <session_id>` for conversation continuity
+4. Concurrency is controlled via a channel-based semaphore on actual query execution
 
-This is a workaround until proper interactive mode with stdin/stdout pipes is implemented.
+This design avoids resource waste from dummy processes while properly controlling concurrency.
 
 ### Security Layer
 
@@ -317,14 +318,14 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 3. **Slash command detection** (`handler.go:71`) - Routes `/new` to cleanup, others to Claude
 4. **Context management** (`handler.go:83`) - GetOrCreate session, Refresh TTL
 5. **Query validation** (`handler.go:86`) - SRE keywords or slash prefix
-6. **Claude execution** (`handler.go:98`) - Spawn process, execute query
+6. **Claude execution** (`handler.go:98`) - Get/create session, execute query
 7. **Response handling** (`handler.go:110`) - Sanitize, save, send
 
 ### Session Lifecycle
 - **Creation**: `contextManager.GetOrCreate()` → INSERT OR REPLACE in database
 - **Refresh**: Every message extends TTL by 2 hours
 - **Expiry**: Background worker checks every 5 minutes
-- **Cleanup**: Kill process, delete messages/tools, deactivate context, log audit
+- **Cleanup**: Remove session from memory, delete messages/tools, deactivate context, log audit
 - **Manual Reset**: `/new` command triggers `expiryWorker.ManualCleanup()`
 
 ### Storage Layer Key Methods
@@ -337,13 +338,13 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 - **LogCleanup** (`tool.go:68`): Audit trail (types: "expired", "manual", "error")
 
 ### Claude CLI Execution
-**Command** (`process.go:236`):
+**Command** (`process.go:176`):
 ```bash
 claude-code -p --output-format json --model sonnet --disable-slash-commands [--resume <id>] <query>
 ```
 - **`cmd.Dir = projectPath`** NOT `--project-path` flag
-- **Placeholder process**: Creates `sleep 86400` dummy process
-- **Actual execution**: One-shot via `executeQuerySync`
+- **One-shot execution**: Each query spawns a new CLI process
+- **Concurrency control**: Semaphore limits concurrent queries (not sessions)
 - **JSON parsing**: Extracts `result` and `session_id` fields
 
 ### Slash Commands
@@ -379,5 +380,5 @@ if strings.HasPrefix(msg.Text, "/") {
 | Context Manager | `internal/context/manager.go` | Session lifecycle |
 | Expiry Worker | `internal/context/expiry.go` | Cleanup |
 | Storage | `internal/storage/chat.go` | Database CRUD |
-| Process Manager | `internal/claude/process.go` | CLI execution |
+| Session Manager | `internal/claude/process.go` | Session tracking & CLI execution |
 | Validator | `internal/context/validator.go` | Query validation |

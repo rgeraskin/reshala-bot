@@ -11,14 +11,14 @@ import (
 
 type ExpiryWorker struct {
 	storage        *storage.Storage
-	processManager *claude.ProcessManager
+	sessionManager *claude.SessionManager
 	interval       time.Duration
 }
 
-func NewExpiryWorker(storage *storage.Storage, pm *claude.ProcessManager, interval time.Duration) *ExpiryWorker {
+func NewExpiryWorker(storage *storage.Storage, sm *claude.SessionManager, interval time.Duration) *ExpiryWorker {
 	return &ExpiryWorker{
 		storage:        storage,
-		processManager: pm,
+		sessionManager: sm,
 		interval:       interval,
 	}
 }
@@ -67,8 +67,8 @@ func (ew *ExpiryWorker) cleanupExpired() error {
 func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext) error {
 	slog.Info("Cleaning up expired context", "chat_id", ctx.ChatID, "session_id", ctx.SessionID)
 
-	if err := ew.processManager.KillProcess(ctx.SessionID); err != nil {
-		slog.Warn("Failed to kill process", "session_id", ctx.SessionID, "error", err)
+	if err := ew.sessionManager.KillSession(ctx.SessionID); err != nil {
+		slog.Warn("Failed to remove session", "session_id", ctx.SessionID, "error", err)
 	}
 
 	messagesDeleted, err := ew.storage.DeleteMessagesByChat(ctx.ChatID)

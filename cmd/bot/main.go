@@ -54,27 +54,27 @@ func main() {
 	}
 	slog.Info("Context validator initialized", "enabled", cfg.Context.ValidationEnabled)
 
-	processManager := claude.NewProcessManager(
+	sessionManager := claude.NewSessionManager(
 		cfg.Claude.CLIPath,
 		cfg.Claude.ProjectPath,
 		cfg.Claude.MaxConcurrentSessions,
 		cfg.Claude.QueryTimeout,
 	)
-	slog.Info("Process manager initialized",
+	slog.Info("Session manager initialized",
 		"max_sessions", cfg.Claude.MaxConcurrentSessions,
 		"timeout", cfg.Claude.QueryTimeout)
 
-	executor := claude.NewExecutor(processManager, cfg.Claude.ProjectPath, cfg.Claude.QueryTimeout)
+	executor := claude.NewExecutor(sessionManager, cfg.Claude.ProjectPath, cfg.Claude.QueryTimeout)
 	slog.Info("Claude executor initialized")
 
 	// Validate Claude CLI is available
-	if err := processManager.ValidateCLI(); err != nil {
+	if err := sessionManager.ValidateCLI(); err != nil {
 		slog.Error("Claude CLI validation failed", "error", err)
 		os.Exit(1)
 	}
 	slog.Info("Claude CLI validated successfully")
 
-	expiryWorker := ctx.NewExpiryWorker(store, processManager, cfg.Context.CleanupInterval)
+	expiryWorker := ctx.NewExpiryWorker(store, sessionManager, cfg.Context.CleanupInterval)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 
@@ -93,7 +93,7 @@ func main() {
 		contextManager,
 		expiryWorker,
 		validator,
-		processManager,
+		sessionManager,
 		executor,
 		sanitizer,
 		store,
@@ -109,8 +109,8 @@ func main() {
 		slog.Info("Received shutdown signal", "signal", sig)
 		cancelWorker()
 
-		activeCount := processManager.GetActiveProcessCount()
-		slog.Info("Cleaning up active processes", "count", activeCount)
+		activeCount := sessionManager.GetActiveSessionCount()
+		slog.Info("Cleaning up active sessions", "count", activeCount)
 
 		// Stop Telegram client gracefully
 		platform.Stop()

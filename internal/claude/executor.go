@@ -11,14 +11,14 @@ import (
 )
 
 type Executor struct {
-	pm          *ProcessManager
+	sm          *SessionManager
 	projectPath string
 	timeout     time.Duration
 }
 
-func NewExecutor(pm *ProcessManager, projectPath string, timeout time.Duration) *Executor {
+func NewExecutor(sm *SessionManager, projectPath string, timeout time.Duration) *Executor {
 	return &Executor{
-		pm:          pm,
+		sm:          sm,
 		projectPath: projectPath,
 		timeout:     timeout,
 	}
@@ -27,7 +27,7 @@ func NewExecutor(pm *ProcessManager, projectPath string, timeout time.Duration) 
 func (e *Executor) Execute(sessionID, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
 	slog.Info("Executing query", "session_id", sessionID, "query", truncateQuery(query))
 
-	response, err := e.pm.ExecuteQuery(sessionID, query, claudeSessionID)
+	response, err := e.sm.ExecuteQuery(sessionID, query, claudeSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("execution failed: %w", err)
 	}

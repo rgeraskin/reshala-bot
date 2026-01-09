@@ -1,12 +1,10 @@
 package claude
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,64 +12,68 @@ import (
 	"time"
 )
 
-type ProcessManager struct {
-	processes   map[string]*ClaudeProcess
-	mu          sync.RWMutex
-	maxProcesses int
-	cliPath     string
-	projectPath string
-	timeout     time.Duration
+// SessionManager tracks active sessions and executes Claude CLI queries.
+// Unlike the previous ProcessManager, it does NOT spawn dummy processes.
+// Sessions are lightweight in-memory trackers; actual queries are one-shot CLI calls.
+type SessionManager struct {
+	sessions     map[string]*Session
+	mu           sync.RWMutex
+	querySem     chan struct{} // Semaphore for limiting concurrent queries
+	maxSessions  int
+	cliPath      string
+	projectPath  string
+	timeout      time.Duration
 }
 
-type ClaudeProcess struct {
-	SessionID   string
-	ChatID      string
-	Cmd         *exec.Cmd
-	Stdin       io.WriteCloser
-	Stdout      io.ReadCloser
-	Stderr      io.ReadCloser
-	StartedAt   time.Time
-	LastUsed    time.Time
-	mu          sync.Mutex
-	cancel      context.CancelFunc
+// Session tracks an active chat session without any OS process.
+type Session struct {
+	SessionID string
+	ChatID    string
+	CreatedAt time.Time
+	LastUsed  time.Time
+	mu        sync.Mutex
 }
 
-func NewProcessManager(cliPath, projectPath string, maxProcesses int, timeout time.Duration) *ProcessManager {
-	return &ProcessManager{
-		processes:   make(map[string]*ClaudeProcess),
-		maxProcesses: maxProcesses,
+func NewSessionManager(cliPath, projectPath string, maxSessions int, timeout time.Duration) *SessionManager {
+	return &SessionManager{
+		sessions:    make(map[string]*Session),
+		querySem:    make(chan struct{}, maxSessions),
+		maxSessions: maxSessions,
 		cliPath:     cliPath,
 		projectPath: projectPath,
 		timeout:     timeout,
 	}
 }
 
-// ValidateCLI checks if the Claude CLI is available and executable
-func (pm *ProcessManager) ValidateCLI() error {
-	// Check if file exists
-	info, err := os.Stat(pm.cliPath)
+// NewProcessManager is an alias for backwards compatibility during refactoring.
+// Deprecated: Use NewSessionManager instead.
+func NewProcessManager(cliPath, projectPath string, maxSessions int, timeout time.Duration) *SessionManager {
+	return NewSessionManager(cliPath, projectPath, maxSessions, timeout)
+}
+
+// ValidateCLI checks if the Claude CLI is available and executable.
+func (sm *SessionManager) ValidateCLI() error {
+	info, err := os.Stat(sm.cliPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("claude CLI not found at path: %s", pm.cliPath)
+			return fmt.Errorf("claude CLI not found at path: %s", sm.cliPath)
 		}
 		return fmt.Errorf("failed to stat claude CLI path: %w", err)
 	}
 
-	// Check if it's a regular file (not a directory)
 	if info.IsDir() {
-		return fmt.Errorf("claude CLI path is a directory, not a file: %s", pm.cliPath)
+		return fmt.Errorf("claude CLI path is a directory, not a file: %s", sm.cliPath)
 	}
 
-	// Check if it's executable
 	if info.Mode()&0111 == 0 {
-		return fmt.Errorf("claude CLI is not executable: %s (mode: %s)", pm.cliPath, info.Mode().String())
+		return fmt.Errorf("claude CLI is not executable: %s (mode: %s)", sm.cliPath, info.Mode().String())
 	}
 
-	// Try running with --version to verify it's actually the Claude CLI
+	// Verify it's actually the Claude CLI
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, pm.cliPath, "--version")
+	cmd := exec.CommandContext(ctx, sm.cliPath, "--version")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -85,154 +87,92 @@ func (pm *ProcessManager) ValidateCLI() error {
 		version = stderr.String()
 	}
 
-	slog.Info("Claude CLI validation successful", "path", pm.cliPath, "version", version)
+	slog.Info("Claude CLI validation successful", "path", sm.cliPath, "version", version)
 	return nil
 }
 
-func (pm *ProcessManager) GetOrCreateProcess(chatID, sessionID string) (*ClaudeProcess, error) {
-	pm.mu.RLock()
-	if proc, exists := pm.processes[sessionID]; exists {
-		pm.mu.RUnlock()
-		proc.mu.Lock()
-		proc.LastUsed = time.Now()
-		proc.mu.Unlock()
-		return proc, nil
+// GetOrCreateSession returns an existing session or creates a new one.
+// This is a lightweight operation - no OS processes are spawned.
+func (sm *SessionManager) GetOrCreateSession(chatID, sessionID string) (*Session, error) {
+	sm.mu.RLock()
+	if session, exists := sm.sessions[sessionID]; exists {
+		sm.mu.RUnlock()
+		session.mu.Lock()
+		session.LastUsed = time.Now()
+		session.mu.Unlock()
+		return session, nil
 	}
-	pm.mu.RUnlock()
+	sm.mu.RUnlock()
 
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
-	if proc, exists := pm.processes[sessionID]; exists {
-		proc.mu.Lock()
-		proc.LastUsed = time.Now()
-		proc.mu.Unlock()
-		return proc, nil
-	}
-
-	if len(pm.processes) >= pm.maxProcesses {
-		return nil, fmt.Errorf("max concurrent processes reached (%d)", pm.maxProcesses)
-	}
-
-	proc, err := pm.createProcess(chatID, sessionID)
-	if err != nil {
-		return nil, err
+	// Double-check after acquiring write lock
+	if session, exists := sm.sessions[sessionID]; exists {
+		session.mu.Lock()
+		session.LastUsed = time.Now()
+		session.mu.Unlock()
+		return session, nil
 	}
 
-	pm.processes[sessionID] = proc
-	return proc, nil
-}
-
-func (pm *ProcessManager) createProcess(chatID, sessionID string) (*ClaudeProcess, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Don't actually start a persistent process since we're using one-shot execution
-	// Just create a placeholder - the real execution happens in executeQuerySync
-	cmd := exec.CommandContext(ctx, "sleep", "86400")  // Sleep for 24 hours
-	cmd.Dir = pm.projectPath
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	if len(sm.sessions) >= sm.maxSessions {
+		return nil, fmt.Errorf("max concurrent sessions reached (%d)", sm.maxSessions)
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to start claude process: %w", err)
-	}
-
-	proc := &ClaudeProcess{
+	session := &Session{
 		SessionID: sessionID,
 		ChatID:    chatID,
-		Cmd:       cmd,
-		Stdin:     stdin,
-		Stdout:    stdout,
-		Stderr:    stderr,
-		StartedAt: time.Now(),
+		CreatedAt: time.Now(),
 		LastUsed:  time.Now(),
-		cancel:    cancel,
 	}
 
-	go pm.monitorProcess(proc)
-
-	slog.Info("Created Claude process", "session_id", sessionID, "chat_id", chatID)
-	return proc, nil
+	sm.sessions[sessionID] = session
+	slog.Info("Created session", "session_id", sessionID, "chat_id", chatID)
+	return session, nil
 }
 
-func (pm *ProcessManager) monitorProcess(proc *ClaudeProcess) {
-	scanner := bufio.NewScanner(proc.Stderr)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			slog.Debug("Claude stderr", "session_id", proc.SessionID, "message", line)
-		}
-	}
-
-	if err := proc.Cmd.Wait(); err != nil {
-		slog.Warn("Claude process exited with error", "session_id", proc.SessionID, "error", err)
-	} else {
-		slog.Info("Claude process exited normally", "session_id", proc.SessionID)
-	}
-
-	pm.mu.Lock()
-	delete(pm.processes, proc.SessionID)
-	pm.mu.Unlock()
+// GetOrCreateProcess is an alias for backwards compatibility.
+// Deprecated: Use GetOrCreateSession instead.
+func (sm *SessionManager) GetOrCreateProcess(chatID, sessionID string) (*Session, error) {
+	return sm.GetOrCreateSession(chatID, sessionID)
 }
 
-func (pm *ProcessManager) ExecuteQuery(sessionID, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
-	pm.mu.RLock()
-	proc, exists := pm.processes[sessionID]
-	pm.mu.RUnlock()
+// ExecuteQuery runs a query against Claude CLI for the given session.
+// Concurrency is controlled via semaphore - this blocks if max concurrent queries reached.
+func (sm *SessionManager) ExecuteQuery(sessionID, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
+	sm.mu.RLock()
+	session, exists := sm.sessions[sessionID]
+	sm.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("process not found for session %s", sessionID)
+		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), pm.timeout)
+	// Acquire semaphore slot (blocks if at capacity)
+	select {
+	case sm.querySem <- struct{}{}:
+		defer func() { <-sm.querySem }()
+	case <-time.After(sm.timeout):
+		return nil, fmt.Errorf("timeout waiting for available query slot")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sm.timeout)
 	defer cancel()
 
-	resultCh := make(chan *ClaudeJSONOutput, 1)
-	errCh := make(chan error, 1)
-
-	go func() {
-		result, err := pm.executeQuerySync(proc, query, claudeSessionID)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		resultCh <- result
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("query timeout after %v", pm.timeout)
-	case err := <-errCh:
+	result, err := sm.executeQuerySync(ctx, query, claudeSessionID)
+	if err != nil {
 		return nil, err
-	case result := <-resultCh:
-		return result, nil
 	}
+
+	session.mu.Lock()
+	session.LastUsed = time.Now()
+	session.mu.Unlock()
+
+	return result, nil
 }
 
-func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
-	// For now, use one-shot execution instead of persistent process
-	// This is a workaround until we implement proper interactive mode handling
-	ctx, cancel := context.WithTimeout(context.Background(), pm.timeout)
-	defer cancel()
-
-	// Build command arguments
+// executeQuerySync runs a one-shot Claude CLI command.
+func (sm *SessionManager) executeQuerySync(ctx context.Context, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
 	args := []string{
 		"-p",
 		"--output-format", "json",
@@ -240,10 +180,7 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, cl
 		"--disable-slash-commands",
 	}
 
-	// Use --resume if we have a Claude session ID to continue conversation
-	// Note: --resume is used instead of --session-id because --session-id
-	// requires exclusive access and fails with "already in use" error if
-	// any other Claude CLI process is running in the same project directory
+	// Use --resume to continue existing conversation
 	if claudeSessionID != "" {
 		args = append(args, "--resume", claudeSessionID)
 		slog.Debug("Resuming Claude session", "claude_session_id", claudeSessionID)
@@ -253,8 +190,8 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, cl
 
 	args = append(args, query)
 
-	cmd := exec.CommandContext(ctx, pm.cliPath, args...)
-	cmd.Dir = pm.projectPath
+	cmd := exec.CommandContext(ctx, sm.cliPath, args...)
+	cmd.Dir = sm.projectPath
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -264,32 +201,90 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, cl
 		return nil, fmt.Errorf("command failed: %w, stderr: %s", err, stderr.String())
 	}
 
-	proc.LastUsed = time.Now()
+	slog.Debug("Claude raw JSON output", "output", stdout.String())
 
-	// Log raw JSON output for debugging
-	slog.Debug("Claude raw JSON output", "session_id", proc.SessionID, "output", stdout.String())
-
-	// Parse JSON output to extract text content and session ID
 	parsedResponse, err := parseClaudeJSON(stdout.String())
 	if err != nil {
 		return nil, err
 	}
 
 	slog.Debug("Parsed Claude response",
-		"session_id", proc.SessionID,
 		"claude_session_id", parsedResponse.SessionID,
-		"response", parsedResponse.Result)
+		"response_length", len(parsedResponse.Result))
+
 	return parsedResponse, nil
 }
 
+// KillSession removes a session from tracking.
+// Since there's no OS process to kill, this just removes the session from the map.
+func (sm *SessionManager) KillSession(sessionID string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
-// ClaudeJSONOutput represents the parsed JSON response from Claude CLI
+	if _, exists := sm.sessions[sessionID]; !exists {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	delete(sm.sessions, sessionID)
+	slog.Info("Removed session", "session_id", sessionID)
+	return nil
+}
+
+// KillProcess is an alias for backwards compatibility.
+// Deprecated: Use KillSession instead.
+func (sm *SessionManager) KillProcess(sessionID string) error {
+	return sm.KillSession(sessionID)
+}
+
+// GetActiveSessionCount returns the number of active sessions.
+func (sm *SessionManager) GetActiveSessionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return len(sm.sessions)
+}
+
+// GetActiveProcessCount is an alias for backwards compatibility.
+// Deprecated: Use GetActiveSessionCount instead.
+func (sm *SessionManager) GetActiveProcessCount() int {
+	return sm.GetActiveSessionCount()
+}
+
+// CleanupIdleSessions removes sessions that have been idle longer than maxIdleTime.
+func (sm *SessionManager) CleanupIdleSessions(maxIdleTime time.Duration) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	now := time.Now()
+	cleaned := 0
+
+	for sessionID, session := range sm.sessions {
+		session.mu.Lock()
+		idle := now.Sub(session.LastUsed)
+		session.mu.Unlock()
+
+		if idle > maxIdleTime {
+			slog.Info("Cleaning up idle session", "session_id", sessionID, "idle_duration", idle)
+			delete(sm.sessions, sessionID)
+			cleaned++
+		}
+	}
+
+	return cleaned
+}
+
+// CleanupIdleProcesses is an alias for backwards compatibility.
+// Deprecated: Use CleanupIdleSessions instead.
+func (sm *SessionManager) CleanupIdleProcesses(maxIdleTime time.Duration) int {
+	return sm.CleanupIdleSessions(maxIdleTime)
+}
+
+// ClaudeJSONOutput represents the parsed JSON response from Claude CLI.
 type ClaudeJSONOutput struct {
 	Result    string
 	SessionID string
 }
 
-// parseClaudeJSON extracts the text content and session ID from Claude's JSON output
+// parseClaudeJSON extracts the text content and session ID from Claude's JSON output.
 func parseClaudeJSON(jsonOutput string) (*ClaudeJSONOutput, error) {
 	var result struct {
 		Type      string `json:"type"`
@@ -299,7 +294,6 @@ func parseClaudeJSON(jsonOutput string) (*ClaudeJSONOutput, error) {
 	}
 
 	if err := json.Unmarshal([]byte(jsonOutput), &result); err != nil {
-		// If JSON parsing fails, return the raw output without session ID
 		slog.Warn("Failed to parse Claude JSON output", "error", err)
 		return &ClaudeJSONOutput{
 			Result:    jsonOutput,
@@ -312,76 +306,9 @@ func parseClaudeJSON(jsonOutput string) (*ClaudeJSONOutput, error) {
 		SessionID: result.SessionID,
 	}
 
-	// Default message if no result
 	if response.Result == "" {
 		response.Result = "No response from Claude"
 	}
 
 	return response, nil
-}
-
-func (pm *ProcessManager) KillProcess(sessionID string) error {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	proc, exists := pm.processes[sessionID]
-	if !exists {
-		return fmt.Errorf("process not found for session %s", sessionID)
-	}
-
-	proc.cancel()
-
-	if err := proc.Stdin.Close(); err != nil {
-		slog.Warn("Failed to close stdin", "session_id", sessionID, "error", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- proc.Cmd.Wait()
-	}()
-
-	select {
-	case <-time.After(5 * time.Second):
-		if err := proc.Cmd.Process.Kill(); err != nil {
-			return fmt.Errorf("failed to kill process: %w", err)
-		}
-		slog.Warn("Force killed process", "session_id", sessionID)
-	case err := <-done:
-		if err != nil {
-			slog.Warn("Process exited with error", "session_id", sessionID, "error", err)
-		}
-	}
-
-	delete(pm.processes, sessionID)
-	slog.Info("Killed Claude process", "session_id", sessionID)
-	return nil
-}
-
-func (pm *ProcessManager) GetActiveProcessCount() int {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	return len(pm.processes)
-}
-
-func (pm *ProcessManager) CleanupIdleProcesses(maxIdleTime time.Duration) int {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	now := time.Now()
-	cleaned := 0
-
-	for sessionID, proc := range pm.processes {
-		proc.mu.Lock()
-		idle := now.Sub(proc.LastUsed)
-		proc.mu.Unlock()
-
-		if idle > maxIdleTime {
-			slog.Info("Cleaning up idle process", "session_id", sessionID, "idle_duration", idle)
-			proc.cancel()
-			delete(pm.processes, sessionID)
-			cleaned++
-		}
-	}
-
-	return cleaned
 }

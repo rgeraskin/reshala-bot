@@ -18,7 +18,7 @@ type Handler struct {
 	contextManager *context.Manager
 	expiryWorker   *context.ExpiryWorker
 	validator      *context.Validator
-	processManager *claude.ProcessManager
+	sessionManager *claude.SessionManager
 	executor       *claude.Executor
 	sanitizer      *security.Sanitizer
 	storage        *storage.Storage
@@ -30,7 +30,7 @@ func NewHandler(
 	contextManager *context.Manager,
 	expiryWorker *context.ExpiryWorker,
 	validator *context.Validator,
-	processManager *claude.ProcessManager,
+	sessionManager *claude.SessionManager,
 	executor *claude.Executor,
 	sanitizer *security.Sanitizer,
 	storage *storage.Storage,
@@ -47,7 +47,7 @@ func NewHandler(
 		contextManager: contextManager,
 		expiryWorker:   expiryWorker,
 		validator:      validator,
-		processManager: processManager,
+		sessionManager: sessionManager,
 		executor:       executor,
 		sanitizer:      sanitizer,
 		storage:        storage,
@@ -128,7 +128,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		slog.Warn("Failed to send typing indicator", "chat_id", msg.ChatID, "error", err)
 	}
 
-	_, err = h.processManager.GetOrCreateProcess(msg.ChatID, ctx.SessionID)
+	_, err = h.sessionManager.GetOrCreateSession(msg.ChatID, ctx.SessionID)
 	if err != nil {
 		return h.sendError(msg.ChatID, "Failed to initialize Claude process. Please try again later.")
 	}
