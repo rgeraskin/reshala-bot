@@ -353,10 +353,10 @@ func formatStatusResponse(ctx *storage.ChatContext, msgCount, toolCount int) str
 	// Timing
 	b.WriteString("\n⏱️ *Timing*\n")
 	b.WriteString(fmt.Sprintf("Created: %s (%s)\n",
-		formatDuration(time.Since(ctx.CreatedAt)),
+		formatDurationAgo(time.Since(ctx.CreatedAt)),
 		ctx.CreatedAt.Format("Jan 2, 3:04 PM")))
 	b.WriteString(fmt.Sprintf("Last active: %s\n",
-		formatDuration(time.Since(ctx.LastInteraction))))
+		formatDurationAgo(time.Since(ctx.LastInteraction))))
 
 	if time.Now().Before(ctx.ExpiresAt) {
 		b.WriteString(fmt.Sprintf("Expires: in %s (%s)\n",
@@ -381,7 +381,37 @@ func formatStatusResponse(ctx *storage.ChatContext, msgCount, toolCount int) str
 	return b.String()
 }
 
+// formatDuration returns a human-readable duration string without "ago" suffix.
+// For negative durations (shouldn't happen normally), returns absolute value.
 func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		if minutes > 0 {
+			return fmt.Sprintf("%dh %dm", hours, minutes)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+
+	if minutes > 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+
+	if seconds > 5 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+
+	return "just now"
+}
+
+// formatDurationAgo returns a human-readable duration string with "ago" suffix.
+func formatDurationAgo(d time.Duration) string {
 	if d < 0 {
 		return "just now"
 	}
