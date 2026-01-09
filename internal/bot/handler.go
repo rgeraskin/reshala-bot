@@ -113,7 +113,8 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	}
 
 	if err := h.storage.SaveMessage(msg.ChatID, "user", msg.Text); err != nil {
-		slog.Warn("Failed to save user message", "chat_id", msg.ChatID, "error", err)
+		// Log error but continue - user message loss is acceptable, we still want to respond
+		slog.Error("Failed to save user message", "chat_id", msg.ChatID, "error", err)
 	}
 
 	valid, reason, err := h.validator.ValidateQuery(ctx, msg.Text)
@@ -151,8 +152,10 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 
 	sanitized := h.sanitizer.Sanitize(response.Result)
 
+	// Critical: Don't send response if we can't persist it (prevents data loss)
 	if err := h.storage.SaveMessage(msg.ChatID, "assistant", sanitized); err != nil {
-		slog.Warn("Failed to save assistant message", "chat_id", msg.ChatID, "error", err)
+		slog.Error("Failed to save assistant message", "chat_id", msg.ChatID, "error", err)
+		return h.sendError(msg.ChatID, "Failed to save response. Please try again.")
 	}
 
 	tools := claude.ExtractToolExecutions(response.Result)
