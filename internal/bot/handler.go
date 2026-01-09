@@ -129,12 +129,15 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		slog.Error("Failed to save user message", "chat_id", msg.ChatID, "error", err)
 	}
 
-	valid, reason, err := h.validator.ValidateQuery(ctx, msg.Text)
-	if err != nil {
-		slog.Warn("Validation error", "chat_id", msg.ChatID, "error", err)
-	}
-	if !valid && reason != "" {
-		return h.platform.SendMessage(msg.ChatID, fmt.Sprintf("⚠️ %s", reason))
+	// Validate query if validator is configured
+	if h.validator != nil {
+		valid, reason, err := h.validator.ValidateQuery(ctx, msg.Text)
+		if err != nil {
+			slog.Warn("Validation error", "chat_id", msg.ChatID, "error", err)
+		}
+		if !valid && reason != "" {
+			return h.platform.SendMessage(msg.ChatID, fmt.Sprintf("⚠️ %s", reason))
+		}
 	}
 
 	if err := h.platform.SendTyping(msg.ChatID); err != nil {
