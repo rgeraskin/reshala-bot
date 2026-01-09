@@ -55,7 +55,7 @@ func (ew *ExpiryWorker) cleanupExpired() error {
 	slog.Info("Found expired contexts to clean up", "count", len(expiredContexts))
 
 	for _, ctx := range expiredContexts {
-		if err := ew.cleanupContext(ctx); err != nil {
+		if err := ew.cleanupContext(ctx, "expired"); err != nil {
 			slog.Warn("Failed to cleanup context", "chat_id", ctx.ChatID, "error", err)
 			continue
 		}
@@ -64,35 +64,24 @@ func (ew *ExpiryWorker) cleanupExpired() error {
 	return nil
 }
 
-func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext) error {
-	slog.Info("Cleaning up expired context", "chat_id", ctx.ChatID, "session_id", ctx.SessionID)
+func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext, cleanupType string) error {
+	slog.Info("Cleaning up context", "chat_id", ctx.ChatID, "session_id", ctx.SessionID, "type", cleanupType)
 
+	// Kill session from memory (non-transactional, but safe to fail)
 	if err := ew.sessionManager.KillSession(ctx.SessionID); err != nil {
-		slog.Warn("Failed to remove session", "session_id", ctx.SessionID, "error", err)
+		slog.Debug("No session to cleanup", "session_id", ctx.SessionID, "error", err)
 	}
 
-	messagesDeleted, err := ew.storage.DeleteMessagesByChat(ctx.ChatID)
+	// Perform database cleanup in a single transaction
+	result, err := ew.storage.CleanupContextTx(ctx.ChatID, cleanupType)
 	if err != nil {
-		slog.Warn("Failed to delete messages", "chat_id", ctx.ChatID, "error", err)
-	}
-
-	toolsDeleted, err := ew.storage.DeleteToolExecutionsByChat(ctx.ChatID)
-	if err != nil {
-		slog.Warn("Failed to delete tool executions", "chat_id", ctx.ChatID, "error", err)
-	}
-
-	if err := ew.storage.DeactivateContext(ctx.ChatID); err != nil {
 		return err
-	}
-
-	if err := ew.storage.LogCleanup(ctx.ChatID, "expired", messagesDeleted, toolsDeleted); err != nil {
-		slog.Warn("Failed to log cleanup", "chat_id", ctx.ChatID, "error", err)
 	}
 
 	slog.Info("Cleaned up context",
 		"chat_id", ctx.ChatID,
-		"messages_deleted", messagesDeleted,
-		"tools_deleted", toolsDeleted)
+		"messages_deleted", result.MessagesDeleted,
+		"tools_deleted", result.ToolsDeleted)
 
 	return nil
 }
@@ -106,5 +95,5 @@ func (ew *ExpiryWorker) ManualCleanup(chatID string) error {
 		return nil
 	}
 
-	return ew.cleanupContext(ctx)
+	return ew.cleanupContext(ctx, "manual")
 }

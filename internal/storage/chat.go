@@ -200,3 +200,57 @@ func (s *Storage) UpdateClaudeSessionID(chatID, claudeSessionID string) error {
 
 	return nil
 }
+
+// CleanupResult holds the result of a transactional cleanup operation
+type CleanupResult struct {
+	MessagesDeleted int
+	ToolsDeleted    int
+}
+
+// CleanupContextTx performs all cleanup operations for a chat in a single transaction.
+// This ensures atomic cleanup - either all operations succeed or none do.
+func (s *Storage) CleanupContextTx(chatID, cleanupType string) (*CleanupResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() // No-op if committed
+
+	// Delete messages
+	msgResult, err := tx.Exec(`DELETE FROM messages WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete messages: %w", err)
+	}
+	messagesDeleted, _ := msgResult.RowsAffected()
+
+	// Delete tool executions
+	toolResult, err := tx.Exec(`DELETE FROM tool_executions WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete tool executions: %w", err)
+	}
+	toolsDeleted, _ := toolResult.RowsAffected()
+
+	// Deactivate context
+	_, err = tx.Exec(`UPDATE chat_contexts SET is_active = 0 WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deactivate context: %w", err)
+	}
+
+	// Log cleanup
+	_, err = tx.Exec(`
+		INSERT INTO cleanup_log (chat_id, cleanup_type, messages_deleted, tools_deleted, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, chatID, cleanupType, messagesDeleted, toolsDeleted, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("failed to log cleanup: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &CleanupResult{
+		MessagesDeleted: int(messagesDeleted),
+		ToolsDeleted:    int(toolsDeleted),
+	}, nil
+}
