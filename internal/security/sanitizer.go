@@ -47,7 +47,11 @@ var DefaultPatterns = []string{
 	`token[s]?\s*[:=]\s*["']?([^"'\s]+)`,
 	`password[s]?\s*[:=]\s*["']?([^"'\s]+)`,
 	`secret[s]?\s*[:=]\s*["']?([^"'\s]+)`,
-	`[A-Za-z0-9+/]{40,}={0,2}`,
+	// Base64 secrets - require at least one non-hex char to exclude hash digests (sha256, etc.)
+	// Pattern 1: non-hex char in first 20 positions
+	`[A-Fa-f0-9]{0,19}[G-Zg-z+/][A-Za-z0-9+/]{39,}={0,2}`,
+	// Pattern 2: non-hex char at position 20-39
+	`[A-Fa-f0-9]{20,39}[G-Zg-z+/][A-Za-z0-9+/]{19,}={0,2}`,
 	`xox[pboa]-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[a-z0-9]{32}`,
 	`eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+`,
 }
