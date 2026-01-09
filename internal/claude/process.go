@@ -192,23 +192,23 @@ func (pm *ProcessManager) monitorProcess(proc *ClaudeProcess) {
 	pm.mu.Unlock()
 }
 
-func (pm *ProcessManager) ExecuteQuery(sessionID, query string) (string, error) {
+func (pm *ProcessManager) ExecuteQuery(sessionID, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
 	pm.mu.RLock()
 	proc, exists := pm.processes[sessionID]
 	pm.mu.RUnlock()
 
 	if !exists {
-		return "", fmt.Errorf("process not found for session %s", sessionID)
+		return nil, fmt.Errorf("process not found for session %s", sessionID)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pm.timeout)
 	defer cancel()
 
-	resultCh := make(chan string, 1)
+	resultCh := make(chan *ClaudeJSONOutput, 1)
 	errCh := make(chan error, 1)
 
 	go func() {
-		result, err := pm.executeQuerySync(proc, query)
+		result, err := pm.executeQuerySync(proc, query, claudeSessionID)
 		if err != nil {
 			errCh <- err
 			return
@@ -218,26 +218,38 @@ func (pm *ProcessManager) ExecuteQuery(sessionID, query string) (string, error) 
 
 	select {
 	case <-ctx.Done():
-		return "", fmt.Errorf("query timeout after %v", pm.timeout)
+		return nil, fmt.Errorf("query timeout after %v", pm.timeout)
 	case err := <-errCh:
-		return "", err
+		return nil, err
 	case result := <-resultCh:
 		return result, nil
 	}
 }
 
-func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string) (string, error) {
+func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
 	// For now, use one-shot execution instead of persistent process
 	// This is a workaround until we implement proper interactive mode handling
 	ctx, cancel := context.WithTimeout(context.Background(), pm.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, pm.cliPath,
+	// Build command arguments
+	args := []string{
 		"-p",
 		"--output-format", "json",
-		"--continue",
-		query,
-	)
+		"--model", "sonnet",
+	}
+
+	// Use --session-id if we have one, otherwise let Claude create a new session
+	if claudeSessionID != "" {
+		args = append(args, "--session-id", claudeSessionID)
+		slog.Debug("Using existing Claude session", "claude_session_id", claudeSessionID)
+	} else {
+		slog.Debug("Creating new Claude session")
+	}
+
+	args = append(args, query)
+
+	cmd := exec.CommandContext(ctx, pm.cliPath, args...)
 	cmd.Dir = pm.projectPath
 
 	var stdout, stderr bytes.Buffer
@@ -245,7 +257,7 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string) (s
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("command failed: %w, stderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("command failed: %w, stderr: %s", err, stderr.String())
 	}
 
 	proc.LastUsed = time.Now()
@@ -253,13 +265,16 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string) (s
 	// Log raw JSON output for debugging
 	slog.Debug("Claude raw JSON output", "session_id", proc.SessionID, "output", stdout.String())
 
-	// Parse JSON output to extract text content
+	// Parse JSON output to extract text content and session ID
 	parsedResponse, err := parseClaudeJSON(stdout.String())
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	slog.Debug("Parsed Claude response", "session_id", proc.SessionID, "response", parsedResponse)
+	slog.Debug("Parsed Claude response",
+		"session_id", proc.SessionID,
+		"claude_session_id", parsedResponse.SessionID,
+		"response", parsedResponse.Result)
 	return parsedResponse, nil
 }
 
@@ -267,26 +282,41 @@ func isResponseComplete(line string) bool {
 	return false
 }
 
-// parseClaudeJSON extracts the text content from Claude's JSON output
-func parseClaudeJSON(jsonOutput string) (string, error) {
+// ClaudeJSONOutput represents the parsed JSON response from Claude CLI
+type ClaudeJSONOutput struct {
+	Result    string
+	SessionID string
+}
+
+// parseClaudeJSON extracts the text content and session ID from Claude's JSON output
+func parseClaudeJSON(jsonOutput string) (*ClaudeJSONOutput, error) {
 	var result struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		Result  string `json:"result"`
+		Type      string `json:"type"`
+		Subtype   string `json:"subtype"`
+		Result    string `json:"result"`
+		SessionID string `json:"session_id"`
 	}
 
 	if err := json.Unmarshal([]byte(jsonOutput), &result); err != nil {
-		// If JSON parsing fails, return the raw output
+		// If JSON parsing fails, return the raw output without session ID
 		slog.Warn("Failed to parse Claude JSON output", "error", err)
-		return jsonOutput, nil
+		return &ClaudeJSONOutput{
+			Result:    jsonOutput,
+			SessionID: "",
+		}, nil
 	}
 
-	// Extract the result text
-	if result.Result != "" {
-		return result.Result, nil
+	response := &ClaudeJSONOutput{
+		Result:    result.Result,
+		SessionID: result.SessionID,
 	}
 
-	return "No response from Claude", nil
+	// Default message if no result
+	if response.Result == "" {
+		response.Result = "No response from Claude"
+	}
+
+	return response, nil
 }
 
 func (pm *ProcessManager) KillProcess(sessionID string) error {

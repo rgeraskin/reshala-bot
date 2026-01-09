@@ -100,19 +100,29 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		return h.sendError(msg.ChatID, "Failed to initialize Claude process. Please try again later.")
 	}
 
-	response, err := h.executor.Execute(ctx.SessionID, msg.Text)
+	// Execute query with Claude session ID for conversation isolation
+	response, err := h.executor.Execute(ctx.SessionID, msg.Text, ctx.ClaudeSessionID)
 	if err != nil {
 		slog.Error("Execution error", "chat_id", msg.ChatID, "session_id", ctx.SessionID, "error", err)
 		return h.sendError(msg.ChatID, "Failed to execute query. The service may be temporarily unavailable.")
 	}
 
-	sanitized := h.sanitizer.Sanitize(response)
+	// If this was the first message, store the Claude session ID
+	if ctx.ClaudeSessionID == "" && response.SessionID != "" {
+		if err := h.storage.UpdateClaudeSessionID(msg.ChatID, response.SessionID); err != nil {
+			slog.Warn("Failed to save Claude session ID", "chat_id", msg.ChatID, "error", err)
+		} else {
+			slog.Info("Saved Claude session ID", "chat_id", msg.ChatID, "claude_session_id", response.SessionID)
+		}
+	}
+
+	sanitized := h.sanitizer.Sanitize(response.Result)
 
 	if err := h.storage.SaveMessage(msg.ChatID, "assistant", sanitized); err != nil {
 		slog.Warn("Failed to save assistant message", "chat_id", msg.ChatID, "error", err)
 	}
 
-	tools := claude.ExtractToolExecutions(response)
+	tools := claude.ExtractToolExecutions(response.Result)
 	for _, tool := range tools {
 		if err := h.storage.SaveToolExecution(msg.ChatID, tool.ToolName, tool.Status); err != nil {
 			slog.Warn("Failed to save tool execution",

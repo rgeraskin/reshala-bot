@@ -7,14 +7,15 @@ import (
 )
 
 type ChatContext struct {
-	ID              int64
-	ChatID          string
-	ChatType        string
-	SessionID       string
-	CreatedAt       time.Time
-	LastInteraction time.Time
-	ExpiresAt       time.Time
-	IsActive        bool
+	ID               int64
+	ChatID           string
+	ChatType         string
+	SessionID        string
+	ClaudeSessionID  string
+	CreatedAt        time.Time
+	LastInteraction  time.Time
+	ExpiresAt        time.Time
+	IsActive         bool
 }
 
 func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Duration) (*ChatContext, error) {
@@ -49,7 +50,7 @@ func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Dur
 func (s *Storage) GetContext(chatID string) (*ChatContext, error) {
 	var ctx ChatContext
 	err := s.db.QueryRow(`
-		SELECT id, chat_id, chat_type, session_id, created_at, last_interaction, expires_at, is_active
+		SELECT id, chat_id, chat_type, session_id, claude_session_id, created_at, last_interaction, expires_at, is_active
 		FROM chat_contexts
 		WHERE chat_id = ?
 	`, chatID).Scan(
@@ -57,6 +58,7 @@ func (s *Storage) GetContext(chatID string) (*ChatContext, error) {
 		&ctx.ChatID,
 		&ctx.ChatType,
 		&ctx.SessionID,
+		&ctx.ClaudeSessionID,
 		&ctx.CreatedAt,
 		&ctx.LastInteraction,
 		&ctx.ExpiresAt,
@@ -98,7 +100,7 @@ func (s *Storage) RefreshContext(chatID string, ttl time.Duration) error {
 func (s *Storage) GetExpiredContexts() ([]*ChatContext, error) {
 	now := time.Now()
 	rows, err := s.db.Query(`
-		SELECT id, chat_id, chat_type, session_id, created_at, last_interaction, expires_at, is_active
+		SELECT id, chat_id, chat_type, session_id, claude_session_id, created_at, last_interaction, expires_at, is_active
 		FROM chat_contexts
 		WHERE expires_at < ? AND is_active = 1
 	`, now)
@@ -115,6 +117,7 @@ func (s *Storage) GetExpiredContexts() ([]*ChatContext, error) {
 			&ctx.ChatID,
 			&ctx.ChatType,
 			&ctx.SessionID,
+			&ctx.ClaudeSessionID,
 			&ctx.CreatedAt,
 			&ctx.LastInteraction,
 			&ctx.ExpiresAt,
@@ -158,4 +161,25 @@ func (s *Storage) GetActiveContextCount() (int, error) {
 		return 0, fmt.Errorf("failed to get active context count: %w", err)
 	}
 	return count, nil
+}
+
+func (s *Storage) UpdateClaudeSessionID(chatID, claudeSessionID string) error {
+	result, err := s.db.Exec(`
+		UPDATE chat_contexts
+		SET claude_session_id = ?
+		WHERE chat_id = ? AND is_active = 1
+	`, claudeSessionID, chatID)
+	if err != nil {
+		return fmt.Errorf("failed to update claude session id: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("context not found or inactive")
+	}
+
+	return nil
 }

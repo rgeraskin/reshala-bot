@@ -24,12 +24,12 @@ func NewExecutor(pm *ProcessManager, projectPath string, timeout time.Duration) 
 	}
 }
 
-func (e *Executor) Execute(sessionID, query string) (string, error) {
+func (e *Executor) Execute(sessionID, query string, claudeSessionID string) (*ClaudeJSONOutput, error) {
 	slog.Info("Executing query", "session_id", sessionID, "query", truncateQuery(query))
 
-	response, err := e.pm.ExecuteQuery(sessionID, query)
+	response, err := e.pm.ExecuteQuery(sessionID, query, claudeSessionID)
 	if err != nil {
-		return "", fmt.Errorf("execution failed: %w", err)
+		return nil, fmt.Errorf("execution failed: %w", err)
 	}
 
 	return response, nil
