@@ -119,18 +119,24 @@ func (c *Client) Stop() {
 }
 
 func convertMessage(tgMsg *tgbotapi.Message) *messaging.IncomingMessage {
-	return &messaging.IncomingMessage{
+	msg := &messaging.IncomingMessage{
 		ChatID:    strconv.FormatInt(tgMsg.Chat.ID, 10),
 		MessageID: strconv.Itoa(tgMsg.MessageID),
-		From: messaging.User{
+		Text:      tgMsg.Text,
+		Timestamp: time.Unix(int64(tgMsg.Date), 0),
+	}
+
+	// From can be nil for channel posts or forwarded messages without sender
+	if tgMsg.From != nil {
+		msg.From = messaging.User{
 			ID:        strconv.FormatInt(tgMsg.From.ID, 10),
 			Username:  tgMsg.From.UserName,
 			FirstName: tgMsg.From.FirstName,
 			LastName:  tgMsg.From.LastName,
-		},
-		Text:      tgMsg.Text,
-		Timestamp: time.Unix(int64(tgMsg.Date), 0),
+		}
 	}
+
+	return msg
 }
 
 func convertChatType(tgType string) messaging.ChatType {
