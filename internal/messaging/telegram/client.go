@@ -118,10 +118,6 @@ func (c *Client) Stop() {
 	c.bot.StopReceivingUpdates()
 }
 
-func (c *Client) GetPlatformName() string {
-	return "telegram"
-}
-
 func convertMessage(tgMsg *tgbotapi.Message) *messaging.IncomingMessage {
 	return &messaging.IncomingMessage{
 		ChatID:    strconv.FormatInt(tgMsg.Chat.ID, 10),

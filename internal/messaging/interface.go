@@ -9,7 +9,6 @@ type Platform interface {
 	IsGroupOrChannel(chatID string) bool
 	Start(handler MessageHandler) error
 	Stop()
-	GetPlatformName() string
 }
 
 type MessageHandler func(msg *IncomingMessage) error

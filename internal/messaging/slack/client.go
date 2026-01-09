@@ -46,7 +46,3 @@ func (c *Client) Start(handler messaging.MessageHandler) error {
 func (c *Client) Stop() {
 	// No-op for stub implementation
 }
-
-func (c *Client) GetPlatformName() string {
-	return "slack"
-}
