@@ -82,6 +82,8 @@ func main() {
 	slog.Info("Claude CLI validated successfully")
 
 	expiryWorker := ctx.NewExpiryWorker(store, sessionManager, cfg.Context.CleanupInterval)
+	// Wire up cleanup callback to remove per-chat locks and prevent memory leaks
+	expiryWorker.SetCleanupCallback(contextManager.RemoveChatLock)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 

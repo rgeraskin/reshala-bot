@@ -46,6 +46,13 @@ func (m *Manager) getChatLock(chatID string) *sync.Mutex {
 	return lock
 }
 
+// RemoveChatLock removes the mutex for the given chatID to prevent memory leaks
+func (m *Manager) RemoveChatLock(chatID string) {
+	m.chatLocksMu.Lock()
+	defer m.chatLocksMu.Unlock()
+	delete(m.chatLocks, chatID)
+}
+
 func (m *Manager) GetOrCreate(chatID, chatType string) (*storage.ChatContext, error) {
 	// Acquire per-chatID lock to prevent race conditions during context operations
 	lock := m.getChatLock(chatID)

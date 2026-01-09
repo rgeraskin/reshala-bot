@@ -9,10 +9,14 @@ import (
 	"github.com/rg/aiops/internal/storage"
 )
 
+// CleanupCallback is called after a context is cleaned up (e.g., to remove per-chat locks)
+type CleanupCallback func(chatID string)
+
 type ExpiryWorker struct {
-	storage        *storage.Storage
-	sessionManager *claude.SessionManager
-	interval       time.Duration
+	storage         *storage.Storage
+	sessionManager  *claude.SessionManager
+	interval        time.Duration
+	cleanupCallback CleanupCallback
 }
 
 func NewExpiryWorker(storage *storage.Storage, sm *claude.SessionManager, interval time.Duration) *ExpiryWorker {
@@ -21,6 +25,11 @@ func NewExpiryWorker(storage *storage.Storage, sm *claude.SessionManager, interv
 		sessionManager: sm,
 		interval:       interval,
 	}
+}
+
+// SetCleanupCallback sets a callback to be invoked after each context cleanup
+func (ew *ExpiryWorker) SetCleanupCallback(cb CleanupCallback) {
+	ew.cleanupCallback = cb
 }
 
 func (ew *ExpiryWorker) Start(ctx context.Context) {
@@ -76,6 +85,11 @@ func (ew *ExpiryWorker) cleanupContext(ctx *storage.ChatContext, cleanupType str
 	result, err := ew.storage.CleanupContextTx(ctx.ChatID, cleanupType)
 	if err != nil {
 		return err
+	}
+
+	// Invoke cleanup callback (e.g., to remove per-chat locks from Manager)
+	if ew.cleanupCallback != nil {
+		ew.cleanupCallback(ctx.ChatID)
 	}
 
 	slog.Info("Cleaned up context",
