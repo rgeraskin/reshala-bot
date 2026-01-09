@@ -2,7 +2,7 @@ package context
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +19,7 @@ type Validator struct {
 func NewValidator(storage *storage.Storage, projectPath string, validationEnabled bool) (*Validator, error) {
 	sreContext, err := loadSREContext(projectPath)
 	if err != nil {
-		log.Printf("Warning: failed to load SRE context: %v", err)
+		slog.Warn("Failed to load SRE context", "error", err)
 		sreContext = "No context available"
 	}
 
@@ -65,7 +65,7 @@ func (v *Validator) ValidateQuery(ctx *storage.ChatContext, query string) (bool,
 
 	messages, err := v.storage.GetRecentMessages(ctx.ChatID, 5)
 	if err != nil {
-		log.Printf("Failed to get recent messages: %v", err)
+		slog.Warn("Failed to get recent messages", "chat_id", ctx.ChatID, "error", err)
 		return true, "", nil
 	}
 
