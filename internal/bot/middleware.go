@@ -79,15 +79,17 @@ func (rl *RateLimiter) Cleanup() {
 
 type Middleware struct {
 	rateLimiter *RateLimiter
+	platform    messaging.Platform
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 }
 
-func NewMiddleware(rateLimit int, window time.Duration) *Middleware {
+func NewMiddleware(rateLimit int, window time.Duration, platform messaging.Platform) *Middleware {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Middleware{
 		rateLimiter: NewRateLimiter(rateLimit, window),
+		platform:    platform,
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -97,6 +99,10 @@ func (m *Middleware) RateLimit(handler messaging.MessageHandler) messaging.Messa
 	return func(msg *messaging.IncomingMessage) error {
 		if !m.rateLimiter.Allow(msg.ChatID) {
 			slog.Warn("Rate limit exceeded", "chat_id", msg.ChatID)
+			if m.platform != nil {
+				_ = m.platform.SendMessage(msg.ChatID,
+					"Rate limit exceeded. Please wait a moment before sending more messages.")
+			}
 			return nil
 		}
 		return handler(msg)

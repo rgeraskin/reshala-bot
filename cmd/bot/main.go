@@ -109,7 +109,7 @@ func main() {
 	slog.Info("Bot handler initialized", "allowed_chats", len(cfg.Telegram.AllowedChatIDs))
 
 	// Initialize middleware with rate limiting (10 requests per minute per chat)
-	middleware := bot.NewMiddleware(10, time.Minute)
+	middleware := bot.NewMiddleware(10, time.Minute, platform)
 	middleware.StartCleanupWorker()
 	slog.Info("Middleware initialized", "rate_limit", "10/min")
 
