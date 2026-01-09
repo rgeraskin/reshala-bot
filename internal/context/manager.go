@@ -3,6 +3,7 @@ package context
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,9 @@ type Manager struct {
 	storage       *storage.Storage
 	sessionKiller SessionKiller
 	ttl           time.Duration
+	// Per-chatID locks to prevent race conditions during context creation/cleanup
+	chatLocks   map[string]*sync.Mutex
+	chatLocksMu sync.Mutex
 }
 
 func NewManager(storage *storage.Storage, sessionKiller SessionKiller, ttl time.Duration) *Manager {
@@ -25,10 +29,29 @@ func NewManager(storage *storage.Storage, sessionKiller SessionKiller, ttl time.
 		storage:       storage,
 		sessionKiller: sessionKiller,
 		ttl:           ttl,
+		chatLocks:     make(map[string]*sync.Mutex),
 	}
 }
 
+// getChatLock returns a mutex for the given chatID, creating one if needed
+func (m *Manager) getChatLock(chatID string) *sync.Mutex {
+	m.chatLocksMu.Lock()
+	defer m.chatLocksMu.Unlock()
+
+	if lock, exists := m.chatLocks[chatID]; exists {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.chatLocks[chatID] = lock
+	return lock
+}
+
 func (m *Manager) GetOrCreate(chatID, chatType string) (*storage.ChatContext, error) {
+	// Acquire per-chatID lock to prevent race conditions during context operations
+	lock := m.getChatLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	ctx, err := m.storage.GetContext(chatID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get context: %w", err)
