@@ -6,17 +6,21 @@ import (
 	"time"
 )
 
+// Executor provides a simple interface for executing Claude queries.
+// Configuration (projectPath, timeout) is managed by SessionManager.
 type Executor struct {
-	sm          *SessionManager
-	projectPath string
-	timeout     time.Duration
+	sm *SessionManager
 }
 
+// NewExecutor creates a new Executor. The projectPath and timeout parameters
+// are accepted for API compatibility but are unused - SessionManager holds
+// the actual configuration values.
 func NewExecutor(sm *SessionManager, projectPath string, timeout time.Duration) *Executor {
+	// projectPath and timeout are intentionally unused - they exist in SessionManager
+	_ = projectPath
+	_ = timeout
 	return &Executor{
-		sm:          sm,
-		projectPath: projectPath,
-		timeout:     timeout,
+		sm: sm,
 	}
 }
 
