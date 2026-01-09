@@ -254,21 +254,43 @@ func (sm *SessionManager) GetActiveProcessCount() int {
 
 // CleanupIdleSessions removes sessions that have been idle longer than maxIdleTime.
 func (sm *SessionManager) CleanupIdleSessions(maxIdleTime time.Duration) int {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	now := time.Now()
-	cleaned := 0
 
+	// Collect idle sessions while holding lock briefly
+	sm.mu.RLock()
+	var toCleanup []string
 	for sessionID, session := range sm.sessions {
 		session.mu.Lock()
 		idle := now.Sub(session.LastUsed)
 		session.mu.Unlock()
 
 		if idle > maxIdleTime {
-			slog.Info("Cleaning up idle session", "session_id", sessionID, "idle_duration", idle)
-			delete(sm.sessions, sessionID)
-			cleaned++
+			toCleanup = append(toCleanup, sessionID)
+		}
+	}
+	sm.mu.RUnlock()
+
+	if len(toCleanup) == 0 {
+		return 0
+	}
+
+	// Delete collected sessions with write lock
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	cleaned := 0
+	for _, sessionID := range toCleanup {
+		// Re-check session still exists and is still idle (may have been refreshed)
+		if session, exists := sm.sessions[sessionID]; exists {
+			session.mu.Lock()
+			idle := now.Sub(session.LastUsed)
+			session.mu.Unlock()
+
+			if idle > maxIdleTime {
+				slog.Info("Cleaning up idle session", "session_id", sessionID, "idle_duration", idle)
+				delete(sm.sessions, sessionID)
+				cleaned++
+			}
 		}
 	}
 
