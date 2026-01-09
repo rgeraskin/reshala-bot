@@ -15,6 +15,7 @@ import (
 type Handler struct {
 	platform       messaging.Platform
 	contextManager *context.Manager
+	expiryWorker   *context.ExpiryWorker
 	validator      *context.Validator
 	processManager *claude.ProcessManager
 	executor       *claude.Executor
@@ -26,6 +27,7 @@ type Handler struct {
 func NewHandler(
 	platform messaging.Platform,
 	contextManager *context.Manager,
+	expiryWorker *context.ExpiryWorker,
 	validator *context.Validator,
 	processManager *claude.ProcessManager,
 	executor *claude.Executor,
@@ -42,6 +44,7 @@ func NewHandler(
 	return &Handler{
 		platform:       platform,
 		contextManager: contextManager,
+		expiryWorker:   expiryWorker,
 		validator:      validator,
 		processManager: processManager,
 		executor:       executor,
@@ -63,6 +66,18 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			"chat_id", msg.ChatID,
 			"user_id", msg.From.ID)
 		return nil
+	}
+
+	// Check for slash commands
+	if strings.HasPrefix(msg.Text, "/") {
+		cmd := strings.Fields(msg.Text)[0] // Extract command
+		switch cmd {
+		case "/new":
+			return h.handleNewCommand(msg.ChatID)
+		// Future commands can be added here
+		default:
+			// Let other slash commands pass through to Claude
+		}
 	}
 
 	chatType, err := h.platform.GetChatType(msg.ChatID)
@@ -152,6 +167,25 @@ func (h *Handler) sendResponse(chatID, text string) error {
 
 func (h *Handler) sendError(chatID, errorMsg string) error {
 	return h.platform.SendMessage(chatID, fmt.Sprintf("❌ %s", errorMsg))
+}
+
+func (h *Handler) handleNewCommand(chatID string) error {
+	slog.Info("Processing /new command", "chat_id", chatID)
+
+	// Trigger full cleanup (kills process, deletes data, deactivates)
+	if err := h.expiryWorker.ManualCleanup(chatID); err != nil {
+		slog.Error("Failed to cleanup session for /new command",
+			"chat_id", chatID,
+			"error", err)
+
+		// Send error message to user
+		return h.platform.SendMessage(chatID,
+			"❌ Failed to reset session. Please try again or contact support.")
+	}
+
+	// Send success confirmation
+	return h.platform.SendMessage(chatID,
+		"✅ Session reset complete! Your next message will start a fresh conversation with Claude.")
 }
 
 func truncateText(text string, maxLen int) string {

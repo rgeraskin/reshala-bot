@@ -91,6 +91,7 @@ func main() {
 	handler := bot.NewHandler(
 		platform,
 		contextManager,
+		expiryWorker,
 		validator,
 		processManager,
 		executor,

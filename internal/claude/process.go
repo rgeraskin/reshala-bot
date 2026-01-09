@@ -237,6 +237,7 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, cl
 		"-p",
 		"--output-format", "json",
 		"--model", "sonnet",
+		"--disable-slash-commands",
 	}
 
 	// Use --session-id if we have one, otherwise let Claude create a new session
