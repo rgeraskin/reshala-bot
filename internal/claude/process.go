@@ -283,7 +283,7 @@ func (sm *SessionManager) CleanupIdleSessions(maxIdleTime time.Duration) int {
 		// Re-check session still exists and is still idle (may have been refreshed)
 		if session, exists := sm.sessions[sessionID]; exists {
 			session.mu.Lock()
-			idle := now.Sub(session.LastUsed)
+			idle := time.Since(session.LastUsed) // Use fresh timestamp, not stale 'now'
 			session.mu.Unlock()
 
 			if idle > maxIdleTime {
