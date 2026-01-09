@@ -46,6 +46,10 @@ func (s *Storage) GetToolExecutions(chatID string, limit int) ([]*ToolExecution,
 		tools = append(tools, &tool)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tool executions: %w", err)
+	}
+
 	return tools, nil
 }
 

@@ -74,6 +74,10 @@ func (s *Storage) Migrate() error {
 		applied[version] = true
 	}
 
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating migrations: %w", err)
+	}
+
 	// Find all migration files
 	files, err := filepath.Glob("./migrations/*.sql")
 	if err != nil {

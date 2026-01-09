@@ -145,6 +145,10 @@ func (s *Storage) GetExpiredContexts() ([]*ChatContext, error) {
 		contexts = append(contexts, &ctx)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating contexts: %w", err)
+	}
+
 	return contexts, nil
 }
 

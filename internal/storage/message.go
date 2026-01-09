@@ -46,6 +46,10 @@ func (s *Storage) GetRecentMessages(chatID string, limit int) ([]*Message, error
 		messages = append(messages, &msg)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating messages: %w", err)
+	}
+
 	// Reverse to get chronological order
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
