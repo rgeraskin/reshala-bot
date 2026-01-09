@@ -9,6 +9,13 @@ import (
 	"github.com/rg/aiops/internal/messaging"
 )
 
+const (
+	// cleanupWindowMultiplier determines how far back to look when cleaning up
+	// old rate limit entries. Using 2x the window ensures we keep entries long
+	// enough to accurately track the rate limit window.
+	cleanupWindowMultiplier = 2
+)
+
 type RateLimiter struct {
 	requests map[string][]time.Time
 	mu       sync.Mutex
@@ -59,7 +66,7 @@ func (rl *RateLimiter) Cleanup() {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-rl.window * 2)
+	cutoff := now.Add(-rl.window * cleanupWindowMultiplier)
 
 	for chatID, requests := range rl.requests {
 		var validRequests []time.Time
@@ -100,8 +107,10 @@ func (m *Middleware) RateLimit(handler messaging.MessageHandler) messaging.Messa
 		if !m.rateLimiter.Allow(msg.ChatID) {
 			slog.Warn("Rate limit exceeded", "chat_id", msg.ChatID)
 			if m.platform != nil {
-				_ = m.platform.SendMessage(msg.ChatID,
-					"Rate limit exceeded. Please wait a moment before sending more messages.")
+				if err := m.platform.SendMessage(msg.ChatID,
+					"Rate limit exceeded. Please wait a moment before sending more messages."); err != nil {
+					slog.Warn("Failed to send rate limit notification", "chat_id", msg.ChatID, "error", err)
+				}
 			}
 			return nil
 		}
