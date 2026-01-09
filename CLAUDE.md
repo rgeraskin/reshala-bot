@@ -294,3 +294,78 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 - `api[_-]?key[s]?\s*[:=]\s*["']?([^"'\s]+)`
 - JWT tokens: `eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+`
 - Base64 secrets: `[A-Za-z0-9+/]{40,}={0,2}`
+
+---
+
+## Quick Reference: Architecture Internals
+
+### Message Flow
+1. **Telegram → Handler** (`internal/messaging/telegram/client.go:93`)
+2. **Whitelist check** (`internal/bot/handler.go:61`)
+3. **Slash command detection** (`handler.go:71`) - Routes `/new` to cleanup, others to Claude
+4. **Context management** (`handler.go:83`) - GetOrCreate session, Refresh TTL
+5. **Query validation** (`handler.go:86`) - SRE keywords or slash prefix
+6. **Claude execution** (`handler.go:98`) - Spawn process, execute query
+7. **Response handling** (`handler.go:110`) - Sanitize, save, send
+
+### Session Lifecycle
+- **Creation**: `contextManager.GetOrCreate()` → INSERT OR REPLACE in database
+- **Refresh**: Every message extends TTL by 2 hours
+- **Expiry**: Background worker checks every 5 minutes
+- **Cleanup**: Kill process, delete messages/tools, deactivate context, log audit
+- **Manual Reset**: `/new` command triggers `expiryWorker.ManualCleanup()`
+
+### Storage Layer Key Methods
+- **CreateContext** (`chat.go:21`): Uses `INSERT OR REPLACE` for UNIQUE constraint handling
+- **GetContext** (`chat.go:50`): Returns nil gracefully if not found
+- **RefreshContext** (`chat.go:76`): Extends `expires_at`, only if `is_active = 1`
+- **GetExpiredContexts** (`chat.go:100`): Query for cleanup worker
+- **DeactivateContext** (`chat.go:134`): Sets `is_active = 0`, keeps row
+- **DeleteMessagesByChat** (`message.go:68`): Returns count deleted
+- **LogCleanup** (`tool.go:68`): Audit trail (types: "expired", "manual", "error")
+
+### Claude CLI Execution
+**Command** (`process.go:236`):
+```bash
+claude-code -p --output-format json --model sonnet --disable-slash-commands [--session-id <id>] <query>
+```
+- **`cmd.Dir = projectPath`** NOT `--project-path` flag
+- **Placeholder process**: Creates `sleep 86400` dummy process
+- **Actual execution**: One-shot via `executeQuerySync`
+- **JSON parsing**: Extracts `result` and `session_id` fields
+
+### Slash Commands
+**Detection** (`handler.go:71-81`):
+```go
+if strings.HasPrefix(msg.Text, "/") {
+    switch strings.Fields(msg.Text)[0] {
+    case "/new":
+        return h.handleNewCommand(msg.ChatID)
+    default:
+        // Pass through to Claude
+    }
+}
+```
+
+**Adding new commands**:
+1. Add case in switch statement
+2. Implement `handleXCommand(chatID string) error` method
+3. Access handler fields (storage, contextManager, etc.) as needed
+
+### Database Schema
+- **chat_contexts**: `chat_id UNIQUE`, enables INSERT OR REPLACE
+- **messages**: CASCADE DELETE on chat_id
+- **tool_executions**: CASCADE DELETE on chat_id
+- **cleanup_log**: No cascade (historical audit)
+
+### Critical File Locations
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Main | `cmd/bot/main.go` | Initialization |
+| Handler | `internal/bot/handler.go` | Message processing |
+| Context Manager | `internal/context/manager.go` | Session lifecycle |
+| Expiry Worker | `internal/context/expiry.go` | Cleanup |
+| Storage | `internal/storage/chat.go` | Database CRUD |
+| Process Manager | `internal/claude/process.go` | CLI execution |
+| Validator | `internal/context/validator.go` | Query validation |
