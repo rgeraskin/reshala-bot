@@ -49,29 +49,3 @@ func (s *Storage) GetToolExecutions(chatID string, limit int) ([]*ToolExecution,
 	return tools, nil
 }
 
-func (s *Storage) DeleteToolExecutionsByChat(chatID string) (int, error) {
-	result, err := s.db.Exec(`
-		DELETE FROM tool_executions WHERE chat_id = ?
-	`, chatID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to delete tool executions: %w", err)
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return int(rows), nil
-}
-
-func (s *Storage) LogCleanup(chatID, cleanupType string, messagesDeleted, toolsDeleted int) error {
-	_, err := s.db.Exec(`
-		INSERT INTO cleanup_log (chat_id, cleanup_type, messages_deleted, tools_deleted, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, chatID, cleanupType, messagesDeleted, toolsDeleted, time.Now())
-	if err != nil {
-		return fmt.Errorf("failed to log cleanup: %w", err)
-	}
-	return nil
-}

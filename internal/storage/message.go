@@ -65,18 +65,3 @@ func (s *Storage) GetMessageCount(chatID string) (int, error) {
 	return count, nil
 }
 
-func (s *Storage) DeleteMessagesByChat(chatID string) (int, error) {
-	result, err := s.db.Exec(`
-		DELETE FROM messages WHERE chat_id = ?
-	`, chatID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to delete messages: %w", err)
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return int(rows), nil
-}
