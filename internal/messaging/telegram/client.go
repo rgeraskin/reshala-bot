@@ -14,6 +14,15 @@ type Client struct {
 	bot *tgbotapi.BotAPI
 }
 
+// parseChatID converts a string chat ID to int64 for Telegram API calls
+func parseChatID(chatID string) (int64, error) {
+	id, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid chat ID: %w", err)
+	}
+	return id, nil
+}
+
 func NewClient(token string) (*Client, error) {
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -29,9 +38,9 @@ func NewClient(token string) (*Client, error) {
 }
 
 func (c *Client) SendMessage(chatID string, text string) error {
-	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	chatIDInt, err := parseChatID(chatID)
 	if err != nil {
-		return fmt.Errorf("invalid chat ID: %w", err)
+		return err
 	}
 
 	msg := tgbotapi.NewMessage(chatIDInt, text)
@@ -48,9 +57,9 @@ func (c *Client) SendMessage(chatID string, text string) error {
 }
 
 func (c *Client) SendTyping(chatID string) error {
-	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	chatIDInt, err := parseChatID(chatID)
 	if err != nil {
-		return fmt.Errorf("invalid chat ID: %w", err)
+		return err
 	}
 
 	action := tgbotapi.NewChatAction(chatIDInt, tgbotapi.ChatTyping)
@@ -62,9 +71,9 @@ func (c *Client) SendTyping(chatID string) error {
 }
 
 func (c *Client) GetChatType(chatID string) (messaging.ChatType, error) {
-	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	chatIDInt, err := parseChatID(chatID)
 	if err != nil {
-		return "", fmt.Errorf("invalid chat ID: %w", err)
+		return "", err
 	}
 
 	chatConfig := tgbotapi.ChatInfoConfig{
