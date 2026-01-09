@@ -66,7 +66,9 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		slog.Warn("Ignoring non-whitelisted message",
 			"chat_id", msg.ChatID,
 			"user_id", msg.From.ID)
-		return nil
+		// Send permission denied message to user
+		return h.platform.SendMessage(msg.ChatID,
+			"🚫 Access denied. This bot is restricted to authorized users only.")
 	}
 
 	// Check for slash commands
@@ -83,7 +85,15 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			return h.handleHistoryCommand(msg.ChatID)
 		// Future commands can be added here
 		default:
-			// Let other slash commands pass through to Claude
+			// Unknown slash command - return helpful message
+			return h.platform.SendMessage(msg.ChatID,
+				fmt.Sprintf("❓ Unknown command: %s\n\nAvailable commands:\n"+
+					"/status - Show session info\n"+
+					"/help - Show help message\n"+
+					"/history - Export conversation history\n"+
+					"/new - Reset session\n\n"+
+					"For other queries, just ask without using a slash command.",
+					cmd))
 		}
 	}
 
@@ -94,6 +104,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 
 	ctx, err := h.contextManager.GetOrCreate(msg.ChatID, chatType.String())
 	if err != nil {
+		slog.Error("Failed to get or create context", "chat_id", msg.ChatID, "error", err)
 		return h.sendError(msg.ChatID, "Failed to initialize context. Please try again later.")
 	}
 
@@ -125,7 +136,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	// Execute query with Claude session ID for conversation isolation
 	response, err := h.executor.Execute(ctx.SessionID, msg.Text, ctx.ClaudeSessionID)
 	if err != nil {
-		slog.Error("Execution error", "chat_id", msg.ChatID, "session_id", ctx.SessionID, "error", err)
+		slog.Error("Execution error", "chat_id", msg.ChatID, "session_id", ctx.SessionID, "query", msg.Text, "error", err)
 		return h.sendError(msg.ChatID, "Failed to execute query. The service may be temporarily unavailable.")
 	}
 

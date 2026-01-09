@@ -22,7 +22,7 @@ func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Dur
 	now := time.Now()
 	expiresAt := now.Add(ttl)
 
-	result, err := s.db.Exec(`
+	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO chat_contexts (chat_id, chat_type, session_id, created_at, last_interaction, expires_at, is_active)
 		VALUES (?, ?, ?, ?, ?, ?, 1)
 	`, chatID, chatType, sessionID, now, now, expiresAt)
@@ -30,9 +30,14 @@ func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Dur
 		return nil, fmt.Errorf("failed to create context: %w", err)
 	}
 
-	id, err := result.LastInsertId()
+	// Get the actual record ID via SELECT instead of LastInsertId()
+	// because LastInsertId() is unreliable after INSERT OR REPLACE
+	var id int64
+	err = s.db.QueryRow(`
+		SELECT id FROM chat_contexts WHERE chat_id = ?
+	`, chatID).Scan(&id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get last insert id: %w", err)
+		return nil, fmt.Errorf("failed to get context id: %w", err)
 	}
 
 	return &ChatContext{
@@ -49,6 +54,7 @@ func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Dur
 
 func (s *Storage) GetContext(chatID string) (*ChatContext, error) {
 	var ctx ChatContext
+	var claudeSessionID sql.NullString
 	err := s.db.QueryRow(`
 		SELECT id, chat_id, chat_type, session_id, claude_session_id, created_at, last_interaction, expires_at, is_active
 		FROM chat_contexts
@@ -58,7 +64,7 @@ func (s *Storage) GetContext(chatID string) (*ChatContext, error) {
 		&ctx.ChatID,
 		&ctx.ChatType,
 		&ctx.SessionID,
-		&ctx.ClaudeSessionID,
+		&claudeSessionID,
 		&ctx.CreatedAt,
 		&ctx.LastInteraction,
 		&ctx.ExpiresAt,
@@ -70,6 +76,12 @@ func (s *Storage) GetContext(chatID string) (*ChatContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get context: %w", err)
 	}
+
+	// Handle NULL claude_session_id
+	if claudeSessionID.Valid {
+		ctx.ClaudeSessionID = claudeSessionID.String
+	}
+
 	return &ctx, nil
 }
 
@@ -112,18 +124,23 @@ func (s *Storage) GetExpiredContexts() ([]*ChatContext, error) {
 	var contexts []*ChatContext
 	for rows.Next() {
 		var ctx ChatContext
+		var claudeSessionID sql.NullString
 		if err := rows.Scan(
 			&ctx.ID,
 			&ctx.ChatID,
 			&ctx.ChatType,
 			&ctx.SessionID,
-			&ctx.ClaudeSessionID,
+			&claudeSessionID,
 			&ctx.CreatedAt,
 			&ctx.LastInteraction,
 			&ctx.ExpiresAt,
 			&ctx.IsActive,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan context: %w", err)
+		}
+		// Handle NULL claude_session_id
+		if claudeSessionID.Valid {
+			ctx.ClaudeSessionID = claudeSessionID.String
 		}
 		contexts = append(contexts, &ctx)
 	}
