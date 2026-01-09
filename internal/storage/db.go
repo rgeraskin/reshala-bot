@@ -122,10 +122,6 @@ func (s *Storage) Close() error {
 	return s.db.Close()
 }
 
-func (s *Storage) DB() *sql.DB {
-	return s.db
-}
-
 func (s *Storage) Begin() (*sql.Tx, error) {
 	return s.db.Begin()
 }
