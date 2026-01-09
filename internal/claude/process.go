@@ -240,10 +240,13 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, cl
 		"--disable-slash-commands",
 	}
 
-	// Use --session-id if we have one, otherwise let Claude create a new session
+	// Use --resume if we have a Claude session ID to continue conversation
+	// Note: --resume is used instead of --session-id because --session-id
+	// requires exclusive access and fails with "already in use" error if
+	// any other Claude CLI process is running in the same project directory
 	if claudeSessionID != "" {
-		args = append(args, "--session-id", claudeSessionID)
-		slog.Debug("Using existing Claude session", "claude_session_id", claudeSessionID)
+		args = append(args, "--resume", claudeSessionID)
+		slog.Debug("Resuming Claude session", "claude_session_id", claudeSessionID)
 	} else {
 		slog.Debug("Creating new Claude session")
 	}
@@ -279,9 +282,6 @@ func (pm *ProcessManager) executeQuerySync(proc *ClaudeProcess, query string, cl
 	return parsedResponse, nil
 }
 
-func isResponseComplete(line string) bool {
-	return false
-}
 
 // ClaudeJSONOutput represents the parsed JSON response from Claude CLI
 type ClaudeJSONOutput struct {

@@ -226,15 +226,27 @@ VALUES (?, ?, ?, ...)
 **Critical**: The Claude CLI does NOT support `--project-path` flag. Instead:
 
 1. Use `cmd.Dir = projectPath` to set the working directory
-2. Use `-p --output-format json --continue` flags for one-shot execution
-3. The `--continue` flag reuses the most recent session in that directory
+2. Use `-p --output-format json` flags for one-shot execution
+3. Use `--resume <session_id>` to continue a specific session (NOT `--session-id`)
+
+**Session Continuity - Use `--resume` NOT `--session-id`**:
+
+The `--session-id` flag requires exclusive access and fails with "Session ID is already in use" error if any other Claude CLI process is running in the same project directory (e.g., an interactive terminal session). The `--resume` flag works correctly in concurrent scenarios.
+
+```go
+// WRONG - fails with "already in use" if another Claude CLI is running
+args = append(args, "--session-id", claudeSessionID)
+
+// CORRECT - works with concurrent Claude CLI instances
+args = append(args, "--resume", claudeSessionID)
+```
 
 **Correct invocation**:
 ```go
 cmd := exec.CommandContext(ctx, cliPath,
     "-p",                    // Print mode (non-interactive)
     "--output-format", "json", // JSON output for parsing
-    "--continue",            // Continue last session
+    "--resume", sessionID,   // Continue specific session (NOT --session-id!)
     query,                   // The user query
 )
 cmd.Dir = projectPath        // Set working directory (NOT --project-path!)
@@ -327,7 +339,7 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 ### Claude CLI Execution
 **Command** (`process.go:236`):
 ```bash
-claude-code -p --output-format json --model sonnet --disable-slash-commands [--session-id <id>] <query>
+claude-code -p --output-format json --model sonnet --disable-slash-commands [--resume <id>] <query>
 ```
 - **`cmd.Dir = projectPath`** NOT `--project-path` flag
 - **Placeholder process**: Creates `sleep 86400` dummy process
