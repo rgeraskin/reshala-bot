@@ -43,6 +43,10 @@ func (c *Client) Start(handler messaging.MessageHandler) error {
 	return fmt.Errorf("slack integration not yet implemented")
 }
 
+func (c *Client) Stop() {
+	// No-op for stub implementation
+}
+
 func (c *Client) GetPlatformName() string {
 	return "slack"
 }

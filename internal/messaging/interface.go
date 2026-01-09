@@ -8,6 +8,7 @@ type Platform interface {
 	GetChatType(chatID string) (ChatType, error)
 	IsGroupOrChannel(chatID string) bool
 	Start(handler MessageHandler) error
+	Stop()
 	GetPlatformName() string
 }
 
