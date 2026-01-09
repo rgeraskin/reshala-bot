@@ -7,8 +7,6 @@ import (
 type ToolExecution struct {
 	ToolName string `json:"tool_name"`
 	Status   string `json:"status"`
-	Input    string `json:"input,omitempty"`
-	Output   string `json:"output,omitempty"`
 }
 
 func ExtractToolExecutions(raw string) []ToolExecution {
