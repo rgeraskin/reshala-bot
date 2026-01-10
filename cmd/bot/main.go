@@ -18,14 +18,15 @@ import (
 )
 
 func main() {
-	// Initialize structured logger
+	// Initialize structured logger with configurable log level
+	logLevel := parseLogLevel(os.Getenv("LOG_LEVEL"))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 		AddSource: true,
 	}))
 	slog.SetDefault(logger)
 
-	slog.Info("Starting aiops bot")
+	slog.Info("Starting aiops bot", "log_level", logLevel.String())
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -174,5 +175,22 @@ func main() {
 	if err := platform.Start(wrappedHandler); err != nil {
 		slog.Error("Bot stopped with error", "error", err)
 		os.Exit(1)
+	}
+}
+
+// parseLogLevel converts LOG_LEVEL environment variable to slog.Level
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug", "DEBUG":
+		return slog.LevelDebug
+	case "info", "INFO":
+		return slog.LevelInfo
+	case "warn", "WARN", "warning", "WARNING":
+		return slog.LevelWarn
+	case "error", "ERROR":
+		return slog.LevelError
+	default:
+		// Default to Info if not specified or invalid
+		return slog.LevelInfo
 	}
 }
