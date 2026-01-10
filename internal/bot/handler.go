@@ -104,6 +104,8 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			return h.handleHistoryCommand(msg.ChatID)
 		case "/session":
 			return h.handleSessionCommand(msg.ChatID)
+		case "/sessions":
+			return h.handleSessionsCommand(msg.ChatID)
 		case "/resume":
 			return h.handleResumeCommand(msg.ChatID, fields)
 		default:
@@ -114,6 +116,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 					"/help - Show help message\n"+
 					"/history - Export conversation history\n"+
 					"/session - Show session ID for transfer\n"+
+					"/sessions - List all sessions\n"+
 					"/resume - Resume or transfer a session\n"+
 					"/new - Reset session\n\n"+
 					"For other queries, just ask without using a slash command.",
@@ -514,6 +517,25 @@ func (h *Handler) handleResumeFromSession(chatID, claudeSessionID string) error 
 			result.ToolsTransferred))
 }
 
+func (h *Handler) handleSessionsCommand(chatID string) error {
+	slog.Info("Processing /sessions command", "chat_id", chatID)
+
+	// Get all contexts (both active and inactive)
+	contexts, err := h.storage.GetAllContexts(true)
+	if err != nil {
+		slog.Error("Failed to get all contexts for /sessions", "chat_id", chatID, "error", err)
+		return h.sendError(chatID, "Failed to retrieve sessions list.")
+	}
+
+	if len(contexts) == 0 {
+		return h.platform.SendMessage(chatID,
+			"📋 No sessions found.\n\nSend a message to start your first conversation!")
+	}
+
+	response := formatSessionsResponse(contexts)
+	return h.sendResponse(chatID, response)
+}
+
 func truncateText(text string, maxLen int) string {
 	if len(text) <= maxLen {
 		return text
@@ -671,6 +693,7 @@ func getHelpText() string {
 /help - Display this help message
 /history - Export conversation history
 /session - Show Claude session ID for transfer
+/sessions - List all sessions across all chats
 /resume - Reactivate expired session or transfer from another chat
 /new - Reset session and start fresh
 
@@ -732,6 +755,68 @@ func formatHistoryResponse(ctx *storage.ChatContext, messages []*storage.Message
 
 	b.WriteString("---\n\n")
 	b.WriteString("💡 Use /new to reset the session and start fresh")
+
+	return b.String()
+}
+
+// formatSessionsResponse generates a formatted list of all sessions.
+func formatSessionsResponse(contexts []*storage.ChatContext) string {
+	var b strings.Builder
+
+	// Count active vs inactive
+	activeCount := 0
+	for _, ctx := range contexts {
+		if ctx.IsActive && time.Now().Before(ctx.ExpiresAt) {
+			activeCount++
+		}
+	}
+	inactiveCount := len(contexts) - activeCount
+
+	// Header
+	b.WriteString("📋 *All Sessions*\n\n")
+	b.WriteString(fmt.Sprintf("*Total:* %d sessions\n", len(contexts)))
+	b.WriteString(fmt.Sprintf("*Active:* %d | *Inactive:* %d\n\n", activeCount, inactiveCount))
+	b.WriteString("---\n\n")
+
+	// List each session
+	for i, ctx := range contexts {
+		// Determine status using positive logic (consistent with formatStatusResponse)
+		isActive := ctx.IsActive && time.Now().Before(ctx.ExpiresAt)
+		statusEmoji := "✅"
+		statusText := "Active"
+		if !isActive {
+			statusEmoji = "💤"
+			statusText = "Inactive"
+		}
+
+		// Session number and status
+		b.WriteString(fmt.Sprintf("*%d.* %s %s\n", i+1, statusEmoji, statusText))
+
+		// Claude session ID (or placeholder if not initialized)
+		if ctx.ClaudeSessionID != "" {
+			b.WriteString(fmt.Sprintf("   *Session:* `%s`\n", ctx.ClaudeSessionID))
+		} else {
+			b.WriteString("   *Session:* Not initialized\n")
+		}
+
+		// Timing info
+		b.WriteString(fmt.Sprintf("   *Chat:* `%s` | *Created:* %s\n",
+			ctx.ChatID,
+			ctx.CreatedAt.Format("Jan 2, 3:04 PM")))
+
+		// Resume hint for sessions with Claude session ID
+		if ctx.ClaudeSessionID != "" {
+			b.WriteString(fmt.Sprintf("   💡 `/resume %s`\n", ctx.ClaudeSessionID))
+		}
+
+		b.WriteString("\n")
+	}
+
+	// Footer
+	b.WriteString("---\n\n")
+	b.WriteString("💡 *Commands:*\n")
+	b.WriteString("• `/status` - Show details for your current session\n")
+	b.WriteString("• `/resume <session_id>` - Transfer a session to this chat")
 
 	return b.String()
 }

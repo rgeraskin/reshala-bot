@@ -221,6 +221,103 @@ func TestGetExpiredContexts(t *testing.T) {
 	}
 }
 
+func TestGetAllContexts(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create multiple contexts
+	_, _ = store.CreateContext("chat1", "group", "session-1", 2*time.Hour)
+	_, _ = store.CreateContext("chat2", "group", "session-2", 2*time.Hour)
+	_, _ = store.CreateContext("chat3", "private", "session-3", 2*time.Hour)
+
+	// Deactivate one
+	_ = store.DeactivateContext("chat2")
+
+	// Test: Get only active contexts
+	activeOnly, err := store.GetAllContexts(false)
+	if err != nil {
+		t.Fatalf("GetAllContexts(false) failed: %v", err)
+	}
+	if len(activeOnly) != 2 {
+		t.Errorf("Expected 2 active contexts, got %d", len(activeOnly))
+	}
+
+	// Test: Get all contexts (including inactive)
+	all, err := store.GetAllContexts(true)
+	if err != nil {
+		t.Fatalf("GetAllContexts(true) failed: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("Expected 3 total contexts, got %d", len(all))
+	}
+}
+
+func TestGetAllContexts_Empty(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// No contexts exist
+	all, err := store.GetAllContexts(true)
+	if err != nil {
+		t.Fatalf("GetAllContexts failed: %v", err)
+	}
+	if all == nil {
+		t.Error("Expected empty slice, got nil")
+	}
+	if len(all) != 0 {
+		t.Errorf("Expected 0 contexts, got %d", len(all))
+	}
+}
+
+func TestGetAllContexts_OrderedByLastInteraction(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create contexts with different interaction times
+	_, _ = store.CreateContext("chat1", "group", "session-1", 2*time.Hour)
+	time.Sleep(20 * time.Millisecond)
+	_, _ = store.CreateContext("chat2", "group", "session-2", 2*time.Hour)
+	time.Sleep(20 * time.Millisecond)
+	_, _ = store.CreateContext("chat3", "group", "session-3", 2*time.Hour)
+
+	all, err := store.GetAllContexts(true)
+	if err != nil {
+		t.Fatalf("GetAllContexts failed: %v", err)
+	}
+
+	// Should be ordered by last_interaction ASC (oldest first)
+	if len(all) != 3 {
+		t.Fatalf("Expected 3 contexts, got %d", len(all))
+	}
+	if all[0].ChatID != "chat1" {
+		t.Errorf("First context should be chat1 (oldest interaction), got %s", all[0].ChatID)
+	}
+	if all[2].ChatID != "chat3" {
+		t.Errorf("Last context should be chat3 (most recent interaction), got %s", all[2].ChatID)
+	}
+}
+
+func TestGetAllContexts_WithClaudeSessionID(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create context and set Claude session ID
+	_, _ = store.CreateContext("chat1", "group", "session-1", 2*time.Hour)
+	_ = store.UpdateClaudeSessionID("chat1", "claude-session-abc")
+
+	all, err := store.GetAllContexts(true)
+	if err != nil {
+		t.Fatalf("GetAllContexts failed: %v", err)
+	}
+
+	if len(all) != 1 {
+		t.Fatalf("Expected 1 context, got %d", len(all))
+	}
+	if all[0].ClaudeSessionID != "claude-session-abc" {
+		t.Errorf("ClaudeSessionID = %s, want claude-session-abc", all[0].ClaudeSessionID)
+	}
+}
+
 func TestDeactivateContext(t *testing.T) {
 	store, cleanup := setupTestDB(t)
 	defer cleanup()

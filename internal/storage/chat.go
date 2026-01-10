@@ -18,6 +18,39 @@ type ChatContext struct {
 	IsActive         bool
 }
 
+// scanChatContexts is a helper that scans ChatContext rows from a query result.
+// The rows must include all columns in order: id, chat_id, chat_type, session_id,
+// claude_session_id, created_at, last_interaction, expires_at, is_active.
+// Returns an empty slice (not nil) when there are no rows.
+func scanChatContexts(rows *sql.Rows) ([]*ChatContext, error) {
+	contexts := make([]*ChatContext, 0)
+	for rows.Next() {
+		var ctx ChatContext
+		var claudeSessionID sql.NullString
+		if err := rows.Scan(
+			&ctx.ID,
+			&ctx.ChatID,
+			&ctx.ChatType,
+			&ctx.SessionID,
+			&claudeSessionID,
+			&ctx.CreatedAt,
+			&ctx.LastInteraction,
+			&ctx.ExpiresAt,
+			&ctx.IsActive,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan context: %w", err)
+		}
+		if claudeSessionID.Valid {
+			ctx.ClaudeSessionID = claudeSessionID.String
+		}
+		contexts = append(contexts, &ctx)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating contexts: %w", err)
+	}
+	return contexts, nil
+}
+
 func (s *Storage) CreateContext(chatID, chatType, sessionID string, ttl time.Duration) (*ChatContext, error) {
 	now := time.Now()
 	expiresAt := now.Add(ttl)
@@ -109,10 +142,33 @@ func (s *Storage) RefreshContext(chatID string, ttl time.Duration) error {
 	return nil
 }
 
+// GetAllContexts retrieves all chat contexts, optionally including inactive ones.
+// Results are ordered by last_interaction ASC (oldest first).
+func (s *Storage) GetAllContexts(includeInactive bool) ([]*ChatContext, error) {
+	query := `
+		SELECT id, chat_id, chat_type, session_id, claude_session_id,
+		       created_at, last_interaction, expires_at, is_active
+		FROM chat_contexts
+	`
+	if !includeInactive {
+		query += " WHERE is_active = 1"
+	}
+	query += " ORDER BY last_interaction ASC"
+
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all contexts: %w", err)
+	}
+	defer rows.Close()
+
+	return scanChatContexts(rows)
+}
+
 func (s *Storage) GetExpiredContexts() ([]*ChatContext, error) {
 	now := time.Now()
 	rows, err := s.db.Query(`
-		SELECT id, chat_id, chat_type, session_id, claude_session_id, created_at, last_interaction, expires_at, is_active
+		SELECT id, chat_id, chat_type, session_id, claude_session_id,
+		       created_at, last_interaction, expires_at, is_active
 		FROM chat_contexts
 		WHERE expires_at < ? AND is_active = 1
 	`, now)
@@ -121,35 +177,7 @@ func (s *Storage) GetExpiredContexts() ([]*ChatContext, error) {
 	}
 	defer rows.Close()
 
-	var contexts []*ChatContext
-	for rows.Next() {
-		var ctx ChatContext
-		var claudeSessionID sql.NullString
-		if err := rows.Scan(
-			&ctx.ID,
-			&ctx.ChatID,
-			&ctx.ChatType,
-			&ctx.SessionID,
-			&claudeSessionID,
-			&ctx.CreatedAt,
-			&ctx.LastInteraction,
-			&ctx.ExpiresAt,
-			&ctx.IsActive,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan context: %w", err)
-		}
-		// Handle NULL claude_session_id
-		if claudeSessionID.Valid {
-			ctx.ClaudeSessionID = claudeSessionID.String
-		}
-		contexts = append(contexts, &ctx)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating contexts: %w", err)
-	}
-
-	return contexts, nil
+	return scanChatContexts(rows)
 }
 
 func (s *Storage) DeactivateContext(chatID string) error {
