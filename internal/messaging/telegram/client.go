@@ -158,19 +158,43 @@ func convertMessage(tgMsg *tgbotapi.Message, botUsername string) *messaging.Inco
 // detectBotMention checks if the message contains an @mention of the bot.
 func detectBotMention(tgMsg *tgbotapi.Message, botUsername string) bool {
 	if tgMsg.Entities == nil || botUsername == "" {
+		slog.Debug("No entities or empty botUsername",
+			"has_entities", tgMsg.Entities != nil,
+			"bot_username", botUsername,
+			"chat_id", tgMsg.Chat.ID)
 		return false
 	}
 
+	slog.Debug("Checking for bot mention",
+		"chat_id", tgMsg.Chat.ID,
+		"text", tgMsg.Text,
+		"bot_username", botUsername,
+		"num_entities", len(tgMsg.Entities))
+
 	for _, entity := range tgMsg.Entities {
+		slog.Debug("Processing entity",
+			"chat_id", tgMsg.Chat.ID,
+			"type", entity.Type,
+			"offset", entity.Offset,
+			"length", entity.Length)
+
 		if entity.Type == "mention" {
 			mention := extractEntityText(tgMsg.Text, entity)
+			slog.Debug("Found mention entity",
+				"chat_id", tgMsg.Chat.ID,
+				"mention", mention,
+				"bot_username", botUsername,
+				"expected", "@"+botUsername)
+
 			// Compare case-insensitively (Telegram usernames are case-insensitive)
 			if strings.EqualFold(mention, "@"+botUsername) {
+				slog.Info("Bot mention detected", "chat_id", tgMsg.Chat.ID, "mention", mention)
 				return true
 			}
 		}
 	}
 
+	slog.Debug("No bot mention found", "chat_id", tgMsg.Chat.ID)
 	return false
 }
 

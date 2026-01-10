@@ -90,10 +90,13 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	// DMs: respond to all messages
 	// Groups: respond only if mentioned, replied to, or slash command
 	if !h.shouldProcessMessage(msg) {
-		slog.Debug("Ignoring group message (no mention/reply/command)",
+		slog.Info("Ignoring group message (no mention/reply/command)",
 			"chat_id", msg.ChatID,
 			"user_id", msg.From.ID,
-			"chat_type", msg.ChatType)
+			"chat_type", msg.ChatType,
+			"is_mentioning_bot", msg.IsMentioningBot,
+			"is_reply_to_bot", msg.IsReplyToBot,
+			"text_prefix", truncateText(msg.Text, 50))
 		return nil // Silently ignore (not an error)
 	}
 
