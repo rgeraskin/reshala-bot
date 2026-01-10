@@ -107,8 +107,12 @@ func (m *Middleware) RateLimit(handler messaging.MessageHandler) messaging.Messa
 		if !m.rateLimiter.Allow(msg.ChatID) {
 			slog.Warn("Rate limit exceeded", "chat_id", msg.ChatID)
 			if m.platform != nil {
-				if err := m.platform.SendMessage(msg.ChatID,
-					"Rate limit exceeded. Please wait a moment before sending more messages."); err != nil {
+				outMsg := &messaging.OutgoingMessage{
+					ChatID:           msg.ChatID,
+					Text:             "Rate limit exceeded. Please wait a moment before sending more messages.",
+					ReplyToMessageID: msg.MessageID,
+				}
+				if _, err := m.platform.SendMessage(outMsg); err != nil {
 					slog.Warn("Failed to send rate limit notification", "chat_id", msg.ChatID, "error", err)
 				}
 			}

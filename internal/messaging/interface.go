@@ -3,7 +3,8 @@ package messaging
 import "time"
 
 type Platform interface {
-	SendMessage(chatID string, text string) error
+	SendMessage(msg *OutgoingMessage) (string, error)
+	AddReaction(chatID, messageID, emoji string) error
 	SendTyping(chatID string) error
 	GetChatType(chatID string) (ChatType, error)
 	IsGroupOrChannel(chatID string) bool
@@ -25,6 +26,13 @@ type IncomingMessage struct {
 	IsMentioningBot  bool     // True if message @mentions the bot
 	IsReplyToBot     bool     // True if message is a direct reply to a bot message
 	ReplyToMessageID string   // ID of message being replied to (empty if not a reply)
+}
+
+// OutgoingMessage represents a message to be sent by the bot
+type OutgoingMessage struct {
+	ChatID           string
+	Text             string
+	ReplyToMessageID string // Optional: message ID to reply to (empty = no reply)
 }
 
 type User struct {

@@ -15,6 +15,13 @@ type Client struct {
 	bot *tgbotapi.BotAPI
 }
 
+// ReactionType represents a Telegram reaction for the setMessageReaction API call.
+// This is needed because go-telegram-bot-api/v5.5.1 predates native reaction support.
+type ReactionType struct {
+	Type  string `json:"type"`
+	Emoji string `json:"emoji"`
+}
+
 // parseChatID converts a string chat ID to int64 for Telegram API calls
 func parseChatID(chatID string) (int64, error) {
 	id, err := strconv.ParseInt(chatID, 10, 64)
@@ -38,20 +45,68 @@ func NewClient(token string) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) SendMessage(chatID string, text string) error {
+func (c *Client) SendMessage(outMsg *messaging.OutgoingMessage) (string, error) {
+	chatIDInt, err := parseChatID(outMsg.ChatID)
+	if err != nil {
+		return "", err
+	}
+
+	msg := tgbotapi.NewMessage(chatIDInt, outMsg.Text)
+	msg.ParseMode = "Markdown"
+
+	// Add reply-to if specified
+	if outMsg.ReplyToMessageID != "" {
+		replyToID, err := strconv.Atoi(outMsg.ReplyToMessageID)
+		if err != nil {
+			slog.Warn("Invalid reply-to message ID, ignoring",
+				"chat_id", outMsg.ChatID,
+				"reply_to_message_id", outMsg.ReplyToMessageID,
+				"error", err)
+		} else {
+			msg.ReplyToMessageID = replyToID
+		}
+	}
+
+	// Send with markdown, fallback to plain text
+	sentMsg, err := c.bot.Send(msg)
+	if err != nil {
+		msg.ParseMode = ""
+		sentMsg, err = c.bot.Send(msg)
+		if err != nil {
+			return "", fmt.Errorf("failed to send message: %w", err)
+		}
+	}
+
+	return strconv.Itoa(sentMsg.MessageID), nil
+}
+
+func (c *Client) AddReaction(chatID, messageID, emoji string) error {
 	chatIDInt, err := parseChatID(chatID)
 	if err != nil {
 		return err
 	}
 
-	msg := tgbotapi.NewMessage(chatIDInt, text)
-	msg.ParseMode = "Markdown"
+	msgIDInt, err := strconv.Atoi(messageID)
+	if err != nil {
+		return fmt.Errorf("invalid message ID: %w", err)
+	}
 
-	if _, err := c.bot.Send(msg); err != nil {
-		msg.ParseMode = ""
-		if _, err := c.bot.Send(msg); err != nil {
-			return fmt.Errorf("failed to send message: %w", err)
-		}
+	// Build params for the setMessageReaction API call
+	params := make(tgbotapi.Params)
+	params.AddNonZero64("chat_id", chatIDInt)
+	params.AddNonZero("message_id", msgIDInt)
+	params.AddInterface("reaction", []ReactionType{
+		{Type: "emoji", Emoji: emoji},
+	})
+
+	_, err = c.bot.MakeRequest("setMessageReaction", params)
+	if err != nil {
+		slog.Warn("Failed to add reaction",
+			"chat_id", chatID,
+			"message_id", messageID,
+			"emoji", emoji,
+			"error", err)
+		return err
 	}
 
 	return nil

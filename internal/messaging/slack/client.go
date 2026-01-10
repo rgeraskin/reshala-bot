@@ -23,7 +23,11 @@ func NewClient(token string) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) SendMessage(chatID string, text string) error {
+func (c *Client) SendMessage(msg *messaging.OutgoingMessage) (string, error) {
+	return "", fmt.Errorf("slack integration not yet implemented")
+}
+
+func (c *Client) AddReaction(chatID, messageID, emoji string) error {
 	return fmt.Errorf("slack integration not yet implemented")
 }
 

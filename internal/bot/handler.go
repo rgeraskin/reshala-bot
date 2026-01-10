@@ -74,16 +74,26 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			"chat_id", msg.ChatID,
 			"user_id", msg.From.ID)
 		// Send permission denied message to user
-		return h.platform.SendMessage(msg.ChatID,
-			"🚫 Access denied. This bot is restricted to authorized users only.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           msg.ChatID,
+			Text:             "🚫 Access denied. This bot is restricted to authorized users only.",
+			ReplyToMessageID: msg.MessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Validate input size to prevent DoS
 	const maxQuerySize = 10000
 	if len(msg.Text) > maxQuerySize {
 		slog.Warn("Query too large", "chat_id", msg.ChatID, "size", len(msg.Text), "max", maxQuerySize)
-		return h.platform.SendMessage(msg.ChatID,
-			fmt.Sprintf("Message too long (%d characters). Maximum is %d characters.", len(msg.Text), maxQuerySize))
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           msg.ChatID,
+			Text:             fmt.Sprintf("Message too long (%d characters). Maximum is %d characters.", len(msg.Text), maxQuerySize),
+			ReplyToMessageID: msg.MessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Filter based on DM/group rules
@@ -109,23 +119,24 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		cmd := fields[0]
 		switch cmd {
 		case "/new":
-			return h.handleNewCommand(msg.ChatID)
+			return h.handleNewCommand(msg.ChatID, msg.MessageID)
 		case "/status":
-			return h.handleStatusCommand(msg.ChatID)
+			return h.handleStatusCommand(msg.ChatID, msg.MessageID)
 		case "/help":
-			return h.handleHelpCommand(msg.ChatID)
+			return h.handleHelpCommand(msg.ChatID, msg.MessageID)
 		case "/history":
-			return h.handleHistoryCommand(msg.ChatID)
+			return h.handleHistoryCommand(msg.ChatID, msg.MessageID)
 		case "/session":
-			return h.handleSessionCommand(msg.ChatID)
+			return h.handleSessionCommand(msg.ChatID, msg.MessageID)
 		case "/sessions":
-			return h.handleSessionsCommand(msg.ChatID)
+			return h.handleSessionsCommand(msg.ChatID, msg.MessageID)
 		case "/resume":
-			return h.handleResumeCommand(msg.ChatID, fields)
+			return h.handleResumeCommand(msg.ChatID, fields, msg.MessageID)
 		default:
 			// Unknown slash command - return helpful message
-			return h.platform.SendMessage(msg.ChatID,
-				fmt.Sprintf("❓ Unknown command: %s\n\nAvailable commands:\n"+
+			outMsg := &messaging.OutgoingMessage{
+				ChatID: msg.ChatID,
+				Text: fmt.Sprintf("❓ Unknown command: %s\n\nAvailable commands:\n"+
 					"/status - Show session info\n"+
 					"/help - Show help message\n"+
 					"/history - Export conversation history\n"+
@@ -134,8 +145,22 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 					"/resume - Resume or transfer a session\n"+
 					"/new - Reset session\n\n"+
 					"For other queries, just ask without using a slash command.",
-					cmd))
+					cmd),
+				ReplyToMessageID: msg.MessageID,
+			}
+			_, err := h.platform.SendMessage(outMsg)
+			return err
 		}
+	}
+
+	// Add reaction BEFORE processing (not for slash commands - they're instant)
+	// This provides immediate feedback that the bot is working
+	if err := h.platform.AddReaction(msg.ChatID, msg.MessageID, "👀"); err != nil {
+		slog.Warn("Failed to add eyes reaction",
+			"chat_id", msg.ChatID,
+			"message_id", msg.MessageID,
+			"error", err)
+		// Continue processing even if reaction fails (non-blocking)
 	}
 
 	chatType, err := h.platform.GetChatType(msg.ChatID)
@@ -146,7 +171,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	ctx, err := h.contextManager.GetOrCreate(msg.ChatID, chatType.String())
 	if err != nil {
 		slog.Error("Failed to get or create context", "chat_id", msg.ChatID, "error", err)
-		return h.sendError(msg.ChatID, "Failed to initialize context. Please try again later.")
+		return h.sendError(msg.ChatID, "Failed to initialize context. Please try again later.", msg.MessageID)
 	}
 
 	if err := h.contextManager.Refresh(msg.ChatID); err != nil {
@@ -165,7 +190,13 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			slog.Warn("Validation error", "chat_id", msg.ChatID, "error", err)
 		}
 		if !valid && reason != "" {
-			return h.platform.SendMessage(msg.ChatID, fmt.Sprintf("⚠️ %s", reason))
+			outMsg := &messaging.OutgoingMessage{
+				ChatID:           msg.ChatID,
+				Text:             fmt.Sprintf("⚠️ %s", reason),
+				ReplyToMessageID: msg.MessageID,
+			}
+			_, err := h.platform.SendMessage(outMsg)
+			return err
 		}
 	}
 
@@ -175,14 +206,14 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 
 	_, err = h.sessionManager.GetOrCreateSession(msg.ChatID, ctx.SessionID)
 	if err != nil {
-		return h.sendError(msg.ChatID, "Failed to initialize Claude process. Please try again later.")
+		return h.sendError(msg.ChatID, "Failed to initialize Claude process. Please try again later.", msg.MessageID)
 	}
 
 	// Execute query with Claude session ID for conversation isolation
 	response, err := h.executor.Execute(ctx.SessionID, msg.Text, ctx.ClaudeSessionID)
 	if err != nil {
 		slog.Error("Execution error", "chat_id", msg.ChatID, "session_id", ctx.SessionID, "query", msg.Text, "error", err)
-		return h.sendError(msg.ChatID, "Failed to execute query. The service may be temporarily unavailable.")
+		return h.sendError(msg.ChatID, "Failed to execute query. The service may be temporarily unavailable.", msg.MessageID)
 	}
 
 	// If this was the first message, store the Claude session ID
@@ -199,7 +230,7 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 	// Critical: Don't send response if we can't persist it (prevents data loss)
 	if err := h.storage.SaveMessage(msg.ChatID, ctx.SessionID, "assistant", sanitized); err != nil {
 		slog.Error("Failed to save assistant message", "chat_id", msg.ChatID, "error", err)
-		return h.sendError(msg.ChatID, "Failed to save response. Please try again.")
+		return h.sendError(msg.ChatID, "Failed to save response. Please try again.", msg.MessageID)
 	}
 
 	tools := claude.ExtractToolExecutions(response.Result)
@@ -212,29 +243,47 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 		}
 	}
 
-	return h.sendResponse(msg.ChatID, sanitized)
+	return h.sendResponse(msg.ChatID, sanitized, msg.MessageID)
 }
 
-func (h *Handler) sendResponse(chatID, text string) error {
+func (h *Handler) sendResponse(chatID, text string, replyToMessageID string) error {
 	if strings.TrimSpace(text) == "" {
 		text = "I received your message but have no response to provide."
 	}
 
 	chunks := splitResponse(text, maxTelegramMessageLen)
+	currentReplyTo := replyToMessageID // First chunk replies to user message
+
 	for i, chunk := range chunks {
-		if err := h.platform.SendMessage(chatID, chunk); err != nil {
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             chunk,
+			ReplyToMessageID: currentReplyTo,
+		}
+
+		sentMessageID, err := h.platform.SendMessage(outMsg)
+		if err != nil {
 			return fmt.Errorf("failed to send response chunk %d: %w", i+1, err)
 		}
+
+		// Subsequent chunks reply to previous chunk (creates chain)
+		currentReplyTo = sentMessageID
 	}
 
 	return nil
 }
 
-func (h *Handler) sendError(chatID, errorMsg string) error {
-	return h.platform.SendMessage(chatID, fmt.Sprintf("❌ %s", errorMsg))
+func (h *Handler) sendError(chatID, errorMsg string, replyToMessageID string) error {
+	outMsg := &messaging.OutgoingMessage{
+		ChatID:           chatID,
+		Text:             fmt.Sprintf("❌ %s", errorMsg),
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err := h.platform.SendMessage(outMsg)
+	return err
 }
 
-func (h *Handler) handleNewCommand(chatID string) error {
+func (h *Handler) handleNewCommand(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /new command", "chat_id", chatID)
 
 	// Trigger full cleanup (kills process, deletes data, deactivates)
@@ -244,28 +293,43 @@ func (h *Handler) handleNewCommand(chatID string) error {
 			"error", err)
 
 		// Send error message to user
-		return h.platform.SendMessage(chatID,
-			"❌ Failed to reset session. Please try again or contact support.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "❌ Failed to reset session. Please try again or contact support.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Send success confirmation
-	return h.platform.SendMessage(chatID,
-		"✅ Session reset complete! Your next message will start a fresh conversation with Claude.")
+	outMsg := &messaging.OutgoingMessage{
+		ChatID:           chatID,
+		Text:             "✅ Session reset complete! Your next message will start a fresh conversation with Claude.",
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err := h.platform.SendMessage(outMsg)
+	return err
 }
 
-func (h *Handler) handleStatusCommand(chatID string) error {
+func (h *Handler) handleStatusCommand(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /status command", "chat_id", chatID)
 
 	// Get context
 	ctx, err := h.storage.GetContext(chatID)
 	if err != nil {
 		slog.Error("Failed to get context for /status", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to retrieve session status.")
+		return h.sendError(chatID, "Failed to retrieve session status.", replyToMessageID)
 	}
 
 	if ctx == nil || !ctx.IsActive {
-		return h.platform.SendMessage(chatID,
-			"ℹ️ No active session. Send a message to start a new conversation with Claude.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "ℹ️ No active session. Send a message to start a new conversation with Claude.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Get message count for current session
@@ -283,61 +347,93 @@ func (h *Handler) handleStatusCommand(chatID string) error {
 	}
 
 	response := formatStatusResponse(ctx, msgCount, len(tools))
-	return h.platform.SendMessage(chatID, response)
+	outMsg := &messaging.OutgoingMessage{
+		ChatID:           chatID,
+		Text:             response,
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err = h.platform.SendMessage(outMsg)
+	return err
 }
 
-func (h *Handler) handleHelpCommand(chatID string) error {
+func (h *Handler) handleHelpCommand(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /help command", "chat_id", chatID)
-	return h.platform.SendMessage(chatID, getHelpText())
+	outMsg := &messaging.OutgoingMessage{
+		ChatID:           chatID,
+		Text:             getHelpText(),
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err := h.platform.SendMessage(outMsg)
+	return err
 }
 
-func (h *Handler) handleHistoryCommand(chatID string) error {
+func (h *Handler) handleHistoryCommand(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /history command", "chat_id", chatID)
 
 	ctx, err := h.storage.GetContext(chatID)
 	if err != nil {
 		slog.Error("Failed to get context for /history", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to retrieve conversation history.")
+		return h.sendError(chatID, "Failed to retrieve conversation history.", replyToMessageID)
 	}
 
 	if ctx == nil || !ctx.IsActive {
-		return h.platform.SendMessage(chatID,
-			"📜 No active session. Start chatting to build history!")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "📜 No active session. Start chatting to build history!",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	messages, err := h.storage.GetRecentMessagesBySession(chatID, ctx.SessionID, 1000)
 	if err != nil {
 		slog.Error("Failed to get messages for /history", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to retrieve messages.")
+		return h.sendError(chatID, "Failed to retrieve messages.", replyToMessageID)
 	}
 
 	if len(messages) == 0 {
-		return h.platform.SendMessage(chatID,
-			"📜 Session exists but no messages yet. Send a message to start!")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "📜 Session exists but no messages yet. Send a message to start!",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	response := formatHistoryResponse(ctx, messages)
-	return h.sendResponse(chatID, response)
+	return h.sendResponse(chatID, response, replyToMessageID)
 }
 
-func (h *Handler) handleSessionCommand(chatID string) error {
+func (h *Handler) handleSessionCommand(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /session command", "chat_id", chatID)
 
 	ctx, err := h.storage.GetContext(chatID)
 	if err != nil {
 		slog.Error("Failed to get context for /session", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to retrieve session information.")
+		return h.sendError(chatID, "Failed to retrieve session information.", replyToMessageID)
 	}
 
 	if ctx == nil {
-		return h.platform.SendMessage(chatID,
-			"ℹ️ No session found. Send a message to start a conversation.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "ℹ️ No session found. Send a message to start a conversation.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	if ctx.ClaudeSessionID == "" {
-		return h.platform.SendMessage(chatID,
-			"⚠️ Session exists but Claude session not yet initialized.\n\n"+
-				"Send at least one message first to generate a Claude session ID.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID: chatID,
+			Text: "⚠️ Session exists but Claude session not yet initialized.\n\n" +
+				"Send at least one message first to generate a Claude session ID.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	statusEmoji := "✅"
@@ -358,112 +454,153 @@ func (h *Handler) handleSessionCommand(chatID string) error {
 		statusEmoji, statusText,
 		ctx.ClaudeSessionID)
 
-	return h.platform.SendMessage(chatID, response)
+	outMsg := &messaging.OutgoingMessage{
+		ChatID:           chatID,
+		Text:             response,
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err = h.platform.SendMessage(outMsg)
+	return err
 }
 
-func (h *Handler) handleResumeCommand(chatID string, fields []string) error {
+func (h *Handler) handleResumeCommand(chatID string, fields []string, replyToMessageID string) error {
 	slog.Info("Processing /resume command", "chat_id", chatID, "args", fields)
 
 	// /resume without args: reactivate current chat's own session
 	if len(fields) < 2 || strings.TrimSpace(fields[1]) == "" {
-		return h.handleResumeOwnSession(chatID)
+		return h.handleResumeOwnSession(chatID, replyToMessageID)
 	}
 
 	// /resume <session_id>: transfer session from another chat
 	claudeSessionID := strings.TrimSpace(fields[1])
-	return h.handleResumeFromSession(chatID, claudeSessionID)
+	return h.handleResumeFromSession(chatID, claudeSessionID, replyToMessageID)
 }
 
 // handleResumeOwnSession reactivates the current chat's own expired session.
-func (h *Handler) handleResumeOwnSession(chatID string) error {
+func (h *Handler) handleResumeOwnSession(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /resume (own session)", "chat_id", chatID)
 
 	ctx, err := h.storage.GetContext(chatID)
 	if err != nil {
 		slog.Error("Failed to get context for /resume", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to retrieve session information.")
+		return h.sendError(chatID, "Failed to retrieve session information.", replyToMessageID)
 	}
 
 	if ctx == nil {
-		return h.platform.SendMessage(chatID,
-			"ℹ️ No session found. Send a message to start a new conversation.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "ℹ️ No session found. Send a message to start a new conversation.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	if ctx.ClaudeSessionID == "" {
-		return h.platform.SendMessage(chatID,
-			"⚠️ No Claude session to resume. Send a message to start a conversation.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "⚠️ No Claude session to resume. Send a message to start a conversation.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	if ctx.IsActive {
-		return h.platform.SendMessage(chatID,
-			"✅ Session is already active! Just send a message to continue.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "✅ Session is already active! Just send a message to continue.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Check if another chat has taken this session
 	hasOther, err := h.storage.HasActiveContextWithClaudeSessionID(ctx.ClaudeSessionID, chatID)
 	if err != nil {
 		slog.Error("Failed to check for active sessions", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to check session status.")
+		return h.sendError(chatID, "Failed to check session status.", replyToMessageID)
 	}
 
 	if hasOther {
-		return h.platform.SendMessage(chatID,
-			fmt.Sprintf("⚠️ This session was transferred to another chat.\n\n"+
+		outMsg := &messaging.OutgoingMessage{
+			ChatID: chatID,
+			Text: fmt.Sprintf("⚠️ This session was transferred to another chat.\n\n"+
 				"To reclaim it, use:\n`/resume %s`\n\n"+
 				"Or send a message to start a fresh conversation.",
-				ctx.ClaudeSessionID))
+				ctx.ClaudeSessionID),
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Reactivate the session
 	if err := h.storage.ReactivateContext(chatID, h.contextManager.GetTTL()); err != nil {
 		slog.Error("Failed to reactivate context", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to reactivate session.")
+		return h.sendError(chatID, "Failed to reactivate session.", replyToMessageID)
 	}
 
 	slog.Info("Reactivated session", "chat_id", chatID, "claude_session_id", ctx.ClaudeSessionID)
 
-	return h.platform.SendMessage(chatID,
-		fmt.Sprintf("✅ *Session Reactivated*\n\n"+
+	outMsg := &messaging.OutgoingMessage{
+		ChatID: chatID,
+		Text: fmt.Sprintf("✅ *Session Reactivated*\n\n"+
 			"*Claude Session ID:* `%s`\n\n"+
 			"Your conversation has been restored. Continue chatting!",
-			ctx.ClaudeSessionID))
+			ctx.ClaudeSessionID),
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err = h.platform.SendMessage(outMsg)
+	return err
 }
 
 // handleResumeFromSession transfers a session from another chat to this one.
-func (h *Handler) handleResumeFromSession(chatID, claudeSessionID string) error {
+func (h *Handler) handleResumeFromSession(chatID, claudeSessionID string, replyToMessageID string) error {
 	slog.Info("Processing /resume (from session)", "chat_id", chatID, "claude_session_id", claudeSessionID)
 
 	// Find the source context
 	sourceCtx, err := h.storage.GetContextByClaudeSessionID(claudeSessionID)
 	if err != nil {
 		slog.Error("Failed to lookup session", "chat_id", chatID, "claude_session_id", claudeSessionID, "error", err)
-		return h.sendError(chatID, "Failed to lookup session.")
+		return h.sendError(chatID, "Failed to lookup session.", replyToMessageID)
 	}
 
 	if sourceCtx == nil {
-		return h.platform.SendMessage(chatID,
-			"❌ Session not found. Possible reasons:\n"+
-				"• Session ID is incorrect\n"+
-				"• Session has been reset with /new\n\n"+
-				"Use /session in the source chat to get the correct ID.")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID: chatID,
+			Text: "❌ Session not found. Possible reasons:\n" +
+				"• Session ID is incorrect\n" +
+				"• Session has been reset with /new\n\n" +
+				"Use /session in the source chat to get the correct ID.",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	// Check if this chat already owns the session
 	if sourceCtx.ChatID == chatID {
 		if sourceCtx.IsActive {
-			return h.platform.SendMessage(chatID,
-				"✅ This chat already owns this session and it's active!\n\n"+
-					"Just send a message to continue.")
+			outMsg := &messaging.OutgoingMessage{
+				ChatID: chatID,
+				Text: "✅ This chat already owns this session and it's active!\n\n" +
+					"Just send a message to continue.",
+				ReplyToMessageID: replyToMessageID,
+			}
+			_, err := h.platform.SendMessage(outMsg)
+			return err
 		}
 		// Reactivate own session
-		return h.handleResumeOwnSession(chatID)
+		return h.handleResumeOwnSession(chatID, replyToMessageID)
 	}
 
 	// Get target chat type
 	chatType, err := h.platform.GetChatType(chatID)
 	if err != nil {
 		slog.Error("Failed to get chat type", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to determine chat type.")
+		return h.sendError(chatID, "Failed to determine chat type.", replyToMessageID)
 	}
 
 	// Generate new session ID for target
@@ -483,7 +620,7 @@ func (h *Handler) handleResumeFromSession(chatID, claudeSessionID string) error 
 			"target_chat_id", chatID,
 			"claude_session_id", claudeSessionID,
 			"error", err)
-		return h.sendError(chatID, "Failed to transfer session. Please try again.")
+		return h.sendError(chatID, "Failed to transfer session. Please try again.", replyToMessageID)
 	}
 
 	// Remove source session from SessionManager memory
@@ -501,60 +638,74 @@ func (h *Handler) handleResumeFromSession(chatID, claudeSessionID string) error 
 
 	// Notify source chat only if it was active
 	if result.SourceWasActive {
-		notifyMsg := fmt.Sprintf(
-			"🔄 *Session Transferred*\n\n"+
-				"Your Claude session has been transferred to another chat.\n\n"+
-				"*Session ID:* `%s`\n"+
-				"*Messages transferred:* %d\n"+
-				"*Tools transferred:* %d\n\n"+
-				"This chat's session is now inactive. Send a message to start fresh,\n"+
-				"or use `/resume %s` to reclaim the session.",
-			result.ClaudeSessionID,
-			result.MessagesTransferred,
-			result.ToolsTransferred,
-			result.ClaudeSessionID)
-
-		if err := h.platform.SendMessage(result.SourceChatID, notifyMsg); err != nil {
+		notifyMsg := &messaging.OutgoingMessage{
+			ChatID: result.SourceChatID,
+			Text: fmt.Sprintf(
+				"🔄 *Session Transferred*\n\n"+
+					"Your Claude session has been transferred to another chat.\n\n"+
+					"*Session ID:* `%s`\n"+
+					"*Messages transferred:* %d\n"+
+					"*Tools transferred:* %d\n\n"+
+					"This chat's session is now inactive. Send a message to start fresh,\n"+
+					"or use `/resume %s` to reclaim the session.",
+				result.ClaudeSessionID,
+				result.MessagesTransferred,
+				result.ToolsTransferred,
+				result.ClaudeSessionID),
+			ReplyToMessageID: "", // No reply context for notification to source
+		}
+		if _, err := h.platform.SendMessage(notifyMsg); err != nil {
 			slog.Warn("Failed to notify source chat", "chat_id", result.SourceChatID, "error", err)
 		}
 	}
 
 	// Send success message to target chat
-	return h.platform.SendMessage(chatID,
-		fmt.Sprintf("✅ *Session Transferred Successfully*\n\n"+
+	outMsg := &messaging.OutgoingMessage{
+		ChatID: chatID,
+		Text: fmt.Sprintf("✅ *Session Transferred Successfully*\n\n"+
 			"*Claude Session ID:* `%s`\n"+
 			"*Messages restored:* %d\n"+
 			"*Tools restored:* %d\n\n"+
 			"You can now continue the conversation where it left off!",
 			result.ClaudeSessionID,
 			result.MessagesTransferred,
-			result.ToolsTransferred))
+			result.ToolsTransferred),
+		ReplyToMessageID: replyToMessageID,
+	}
+	_, err = h.platform.SendMessage(outMsg)
+	return err
 }
 
-func (h *Handler) handleSessionsCommand(chatID string) error {
+func (h *Handler) handleSessionsCommand(chatID string, replyToMessageID string) error {
 	slog.Info("Processing /sessions command", "chat_id", chatID)
 
 	// Get all contexts (both active and inactive)
 	contexts, err := h.storage.GetAllContexts(true)
 	if err != nil {
 		slog.Error("Failed to get all contexts for /sessions", "chat_id", chatID, "error", err)
-		return h.sendError(chatID, "Failed to retrieve sessions list.")
+		return h.sendError(chatID, "Failed to retrieve sessions list.", replyToMessageID)
 	}
 
 	if len(contexts) == 0 {
-		return h.platform.SendMessage(chatID,
-			"📋 No sessions found.\n\nSend a message to start your first conversation!")
+		outMsg := &messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             "📋 No sessions found.\n\nSend a message to start your first conversation!",
+			ReplyToMessageID: replyToMessageID,
+		}
+		_, err := h.platform.SendMessage(outMsg)
+		return err
 	}
 
 	response := formatSessionsResponse(contexts)
-	return h.sendResponse(chatID, response)
+	return h.sendResponse(chatID, response, replyToMessageID)
 }
 
 func truncateText(text string, maxLen int) string {
-	if len(text) <= maxLen {
+	runes := []rune(text)
+	if len(runes) <= maxLen {
 		return text
 	}
-	return text[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 func splitResponse(text string, maxLen int) []string {
@@ -573,13 +724,15 @@ func splitResponse(text string, maxLen int) []string {
 				currentChunk.Reset()
 			}
 
-			if len(line) > maxLen {
-				for i := 0; i < len(line); i += maxLen {
+			// Handle lines longer than maxLen (use runes to avoid breaking UTF-8)
+			lineRunes := []rune(line)
+			if len(lineRunes) > maxLen {
+				for i := 0; i < len(lineRunes); i += maxLen {
 					end := i + maxLen
-					if end > len(line) {
-						end = len(line)
+					if end > len(lineRunes) {
+						end = len(lineRunes)
 					}
-					chunks = append(chunks, line[i:end])
+					chunks = append(chunks, string(lineRunes[i:end]))
 				}
 			} else {
 				currentChunk.WriteString(line)
@@ -757,10 +910,11 @@ func formatHistoryResponse(ctx *storage.ChatContext, messages []*storage.Message
 		timestamp := msg.CreatedAt.Format("3:04 PM")
 		b.WriteString(fmt.Sprintf("*[%s] %s:*\n", timestamp, roleLabel))
 
-		// Truncate very long messages
+		// Truncate very long messages (use runes to avoid breaking UTF-8)
 		content := msg.Content
-		if len(content) > maxHistoryContentLen {
-			content = content[:maxHistoryContentLen] + "\n[... truncated ...]"
+		if len([]rune(content)) > maxHistoryContentLen {
+			runes := []rune(content)
+			content = string(runes[:maxHistoryContentLen]) + "\n[... truncated ...]"
 		}
 
 		b.WriteString(content)

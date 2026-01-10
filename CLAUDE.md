@@ -11,6 +11,8 @@ AIOps Telegram Bot - A secure Telegram bot that integrates with Claude Code CLI 
 - **2-hour session TTL**: Automatic cleanup of inactive sessions to prevent resource leaks
 - **Security-first**: Output sanitization to prevent credential leakage, read-only MCP access
 - **Smart message filtering**: DMs respond to all messages; groups require @mention, reply to bot, or slash command
+- **Reply threading**: All bot responses are threaded (reply to user's message), preventing confusion in busy group chats
+- **Visual feedback**: '👀' emoji reaction added immediately when bot starts processing (not shown for instant slash commands)
 
 ## Common Commands
 
@@ -108,7 +110,11 @@ internal/storage/storage.go (SQLite persistence)
 
 **Platform Abstraction** (`internal/messaging/`):
 - `messaging.Platform` interface allows pluggable messaging platforms (Telegram/Slack)
+- `OutgoingMessage` struct provides extensible message format with reply threading support
+- `SendMessage()` returns sent message ID to enable reply chaining for multi-chunk responses
+- `AddReaction()` method for emoji reactions (best-effort, non-blocking on failure)
 - Telegram-specific implementation in `internal/messaging/telegram/`
+- Custom `setMessageReaction` API call (library v5.5.1 predates native reaction support)
 - Future Slack integration ready via interface design
 
 **Security** (`internal/security/`):
@@ -185,6 +191,9 @@ The bot requires a Claude workspace (`claude.project_path`) with:
 
 ### Extending to New Platform (e.g., Slack)
 1. Implement `messaging.Platform` interface in `internal/messaging/slack/`
+   - `SendMessage(msg *OutgoingMessage) (string, error)` - Send message, return sent ID
+   - `AddReaction(chatID, messageID, emoji string) error` - Add emoji reaction (best-effort)
+   - Map platform concepts: Slack's `thread_ts` ≈ Telegram's `ReplyToMessageID`
 2. Add platform-specific client and types
 3. Update `cmd/bot/main.go` to instantiate new platform
 4. No changes needed to handler/context/storage layers
@@ -319,10 +328,29 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 2. **Whitelist check** (`internal/bot/handler.go:72`) - Rejects non-whitelisted chats/users
 3. **DM/Group filtering** (`handler.go:92`) - DMs: all messages; Groups: @mention, reply to bot, or /command
 4. **Slash command detection** (`handler.go:100`) - Routes `/new`, `/status`, `/help`, etc.
-5. **Context management** (`handler.go:127`) - GetOrCreate session, Refresh TTL
-6. **Query validation** (`handler.go:148`) - SRE keywords or slash prefix
-7. **Claude execution** (`handler.go:162`) - Get/create session, execute query
-8. **Response handling** (`handler.go:183`) - Sanitize, save, send
+5. **Emoji reaction** (`handler.go:143`) - Add '👀' reaction (skipped for slash commands)
+6. **Context management** (`handler.go:156`) - GetOrCreate session, Refresh TTL
+7. **Query validation** (`handler.go:171`) - SRE keywords or slash prefix
+8. **Claude execution** (`handler.go:192`) - Get/create session, execute query
+9. **Response handling** (`handler.go:213`) - Sanitize, save, send with reply threading
+
+### Reply Threading & Visual Feedback
+
+**Reply Threading Strategy:**
+- **All responses**: Bot replies to user's original message (creates threaded conversation)
+- **Multi-chunk messages**: First chunk → user message, subsequent chunks → previous chunk
+- **Pattern**: `User message → Bot chunk 1 → Bot chunk 2 → Bot chunk 3` (visual thread)
+- **Benefit**: Prevents confusion in busy group chats where multiple conversations happen simultaneously
+
+**Emoji Reactions:**
+- **'👀' reaction**: Added immediately when bot starts processing (before Claude execution)
+- **Skipped for slash commands**: Instant responses (/status, /help, etc.) don't need "processing" indicator
+- **Non-blocking**: Reaction failures are logged but don't prevent message processing (best-effort)
+
+**Implementation Details:**
+- `OutgoingMessage` struct with `ReplyToMessageID` field enables threading
+- `SendMessage()` returns sent message ID to enable reply chaining
+- Custom `setMessageReaction` API call via `bot.MakeRequest()` (library lacks native support)
 
 ### Session Lifecycle
 - **Creation**: `contextManager.GetOrCreate()` → INSERT OR REPLACE in database
