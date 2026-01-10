@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 AIOps Telegram Bot - A secure Telegram bot that integrates with Claude Code CLI for SRE operations. The bot executes one-shot Claude CLI queries for each Telegram group conversation, providing intelligent assistance for Kubernetes, ArgoCD, Jira, GitHub, Datadog, and other SRE tools.
 
 **Key Architecture Principles:**
-- **Per-chat isolation**: Each Telegram group gets its own Claude CLI session with isolated conversation history
+- **Per-chat isolation**: Each Telegram group/DM gets its own Claude CLI session with isolated conversation history
 - **2-hour session TTL**: Automatic cleanup of inactive sessions to prevent resource leaks
 - **Security-first**: Output sanitization to prevent credential leakage, read-only MCP access
-- **Group-only access**: Bot ignores private messages by design
+- **Smart message filtering**: DMs respond to all messages; groups require @mention, reply to bot, or slash command
 
 ## Common Commands
 
@@ -194,7 +194,7 @@ The bot requires a Claude workspace (`claude.project_path`) with:
 - **Never commit secrets**: Use environment variables, never hardcode API tokens
 - **MCP read-only**: All MCP tools must be read-only (no kubectl apply/delete, no write operations)
 - **Output sanitization**: All Claude responses pass through security.SanitizeOutput()
-- **Group-only access**: Bot validates message type and ignores private chats
+- **Smart message filtering**: DMs accept all messages; groups require @mention, reply to bot, or slash command
 - **Session isolation**: Each chat has separate Claude session with isolated conversation history
 
 ## Testing
@@ -315,13 +315,14 @@ All responses MUST pass through `security.Sanitize()` before sending to Telegram
 ## Quick Reference: Architecture Internals
 
 ### Message Flow
-1. **Telegram → Handler** (`internal/messaging/telegram/client.go:93`)
-2. **Whitelist check** (`internal/bot/handler.go:61`)
-3. **Slash command detection** (`handler.go:71`) - Routes `/new` to cleanup, others to Claude
-4. **Context management** (`handler.go:83`) - GetOrCreate session, Refresh TTL
-5. **Query validation** (`handler.go:86`) - SRE keywords or slash prefix
-6. **Claude execution** (`handler.go:98`) - Get/create session, execute query
-7. **Response handling** (`handler.go:110`) - Sanitize, save, send
+1. **Telegram → Handler** (`internal/messaging/telegram/client.go:116`) - Converts message with mention/reply detection
+2. **Whitelist check** (`internal/bot/handler.go:72`) - Rejects non-whitelisted chats/users
+3. **DM/Group filtering** (`handler.go:92`) - DMs: all messages; Groups: @mention, reply to bot, or /command
+4. **Slash command detection** (`handler.go:100`) - Routes `/new`, `/status`, `/help`, etc.
+5. **Context management** (`handler.go:127`) - GetOrCreate session, Refresh TTL
+6. **Query validation** (`handler.go:148`) - SRE keywords or slash prefix
+7. **Claude execution** (`handler.go:162`) - Get/create session, execute query
+8. **Response handling** (`handler.go:183`) - Sanitize, save, send
 
 ### Session Lifecycle
 - **Creation**: `contextManager.GetOrCreate()` → INSERT OR REPLACE in database
@@ -350,14 +351,16 @@ claude-code -p --output-format json --model sonnet --disable-slash-commands [--r
 - **JSON parsing**: Extracts `result` and `session_id` fields
 
 ### Slash Commands
-**Detection** (`handler.go:71-81`):
+**Detection** (`handler.go:100-125`):
 ```go
 if strings.HasPrefix(msg.Text, "/") {
     switch strings.Fields(msg.Text)[0] {
     case "/new":
         return h.handleNewCommand(msg.ChatID)
+    case "/status", "/help", "/history", "/session", "/sessions", "/resume":
+        // Handle other commands...
     default:
-        // Pass through to Claude
+        // Unknown command - return helpful message
     }
 }
 ```
@@ -366,6 +369,30 @@ if strings.HasPrefix(msg.Text, "/") {
 1. Add case in switch statement
 2. Implement `handleXCommand(chatID string) error` method
 3. Access handler fields (storage, contextManager, etc.) as needed
+
+### DM/Group Filtering Logic
+**Implementation** (`handler.go:824-857`):
+```go
+func (h *Handler) shouldProcessMessage(msg *messaging.IncomingMessage) bool {
+    // DMs: Always respond
+    if msg.ChatType == messaging.ChatTypePrivate {
+        return true
+    }
+    // Groups: Check for triggers
+    if msg.ChatType.IsGroupOrChannel() {
+        if strings.HasPrefix(msg.Text, "/") { return true }  // Slash commands
+        if msg.IsMentioningBot { return true }               // @mentions
+        if msg.IsReplyToBot { return true }                  // Direct replies
+        return false  // Ignore other group messages
+    }
+    return true  // Unknown chat type - fail-open
+}
+```
+
+**Telegram detection** (`telegram/client.go:158-214`):
+- `detectBotMention()`: Parses `Entities` for @bot_username mentions
+- `detectReplyToBot()`: Checks if `ReplyToMessage.From` is the bot
+- `utf16OffsetToByteOffset()`: Converts Telegram's UTF-16 offsets to Go's UTF-8 bytes
 
 ### Database Schema
 - **chat_contexts**: `chat_id UNIQUE`, enables INSERT OR REPLACE
@@ -378,7 +405,9 @@ if strings.HasPrefix(msg.Text, "/") {
 | Component | File | Purpose |
 |-----------|------|---------|
 | Main | `cmd/bot/main.go` | Initialization |
-| Handler | `internal/bot/handler.go` | Message processing |
+| Handler | `internal/bot/handler.go` | Message processing, DM/group filtering |
+| Telegram Client | `internal/messaging/telegram/client.go` | Telegram API, mention/reply detection |
+| Message Interface | `internal/messaging/interface.go` | Platform-agnostic message types |
 | Context Manager | `internal/context/manager.go` | Session lifecycle |
 | Expiry Worker | `internal/context/expiry.go` | Cleanup |
 | Storage | `internal/storage/chat.go` | Database CRUD |

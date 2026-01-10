@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rg/aiops/internal/messaging"
 	"github.com/rg/aiops/internal/storage"
 )
 
@@ -284,5 +285,120 @@ func TestNewHandler(t *testing.T) {
 	// Check a non-allowed ID
 	if handler.allowedChatIDs["999"] {
 		t.Error("Chat ID 999 should not be allowed")
+	}
+}
+
+func TestShouldProcessMessage(t *testing.T) {
+	handler := &Handler{}
+
+	tests := []struct {
+		name string
+		msg  *messaging.IncomingMessage
+		want bool
+	}{
+		// DMs: always respond
+		{
+			name: "dm_always_responds",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypePrivate, Text: "hello"},
+			want: true,
+		},
+		{
+			name: "dm_with_no_text",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypePrivate, Text: ""},
+			want: true,
+		},
+
+		// Groups: slash commands
+		{
+			name: "group_slash_command_status",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "/status"},
+			want: true,
+		},
+		{
+			name: "group_slash_command_help",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "/help"},
+			want: true,
+		},
+		{
+			name: "group_slash_command_with_args",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "/resume abc123"},
+			want: true,
+		},
+
+		// Groups: bot mention
+		{
+			name: "group_with_mention",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "@bot hello", IsMentioningBot: true},
+			want: true,
+		},
+		{
+			name: "group_with_mention_only",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "@bot", IsMentioningBot: true},
+			want: true,
+		},
+
+		// Groups: reply to bot
+		{
+			name: "group_reply_to_bot",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "thanks", IsReplyToBot: true},
+			want: true,
+		},
+		{
+			name: "group_reply_to_bot_with_mention",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "@bot thanks", IsMentioningBot: true, IsReplyToBot: true},
+			want: true,
+		},
+
+		// Groups: plain message (should ignore)
+		{
+			name: "group_plain_message",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "hello everyone"},
+			want: false,
+		},
+		{
+			name: "group_no_trigger",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "what's for lunch?", IsMentioningBot: false, IsReplyToBot: false},
+			want: false,
+		},
+
+		// Supergroups (should behave like groups)
+		{
+			name: "supergroup_plain_message",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "hello"},
+			want: false,
+		},
+		{
+			name: "supergroup_with_mention",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeGroup, Text: "@bot hello", IsMentioningBot: true},
+			want: true,
+		},
+
+		// Channels (should behave like groups)
+		{
+			name: "channel_plain_message",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeChannel, Text: "hello"},
+			want: false,
+		},
+		{
+			name: "channel_with_mention",
+			msg:  &messaging.IncomingMessage{ChatType: messaging.ChatTypeChannel, Text: "@bot hello", IsMentioningBot: true},
+			want: true,
+		},
+
+		// Edge case: unknown chat type (fail-open)
+		{
+			name: "unknown_chat_type",
+			msg:  &messaging.IncomingMessage{ChatType: "", Text: "hello"},
+			want: true, // Default to responding (fail-open)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := handler.shouldProcessMessage(tt.msg)
+			if got != tt.want {
+				t.Errorf("shouldProcessMessage() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

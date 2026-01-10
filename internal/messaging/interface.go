@@ -19,6 +19,12 @@ type IncomingMessage struct {
 	From      User
 	Text      string
 	Timestamp time.Time
+
+	// Filtering metadata (platform-agnostic)
+	ChatType         ChatType // Chat type: private, group, or channel
+	IsMentioningBot  bool     // True if message @mentions the bot
+	IsReplyToBot     bool     // True if message is a direct reply to a bot message
+	ReplyToMessageID string   // ID of message being replied to (empty if not a reply)
 }
 
 type User struct {

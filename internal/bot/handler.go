@@ -86,6 +86,17 @@ func (h *Handler) HandleMessage(msg *messaging.IncomingMessage) error {
 			fmt.Sprintf("Message too long (%d characters). Maximum is %d characters.", len(msg.Text), maxQuerySize))
 	}
 
+	// Filter based on DM/group rules
+	// DMs: respond to all messages
+	// Groups: respond only if mentioned, replied to, or slash command
+	if !h.shouldProcessMessage(msg) {
+		slog.Debug("Ignoring group message (no mention/reply/command)",
+			"chat_id", msg.ChatID,
+			"user_id", msg.From.ID,
+			"chat_type", msg.ChatType)
+		return nil // Silently ignore (not an error)
+	}
+
 	// Check for slash commands
 	if strings.HasPrefix(msg.Text, "/") {
 		fields := strings.Fields(msg.Text)
@@ -819,4 +830,39 @@ func formatSessionsResponse(contexts []*storage.ChatContext) string {
 	b.WriteString("• `/resume <session_id>` - Transfer a session to this chat")
 
 	return b.String()
+}
+
+// shouldProcessMessage determines if the bot should respond to a message
+// based on chat type and message context.
+// DMs: Always respond
+// Groups: Respond only if mentioned, replied to, or slash command
+func (h *Handler) shouldProcessMessage(msg *messaging.IncomingMessage) bool {
+	// DMs: Always respond
+	if msg.ChatType == messaging.ChatTypePrivate {
+		return true
+	}
+
+	// Groups/Channels: Check for trigger conditions
+	if msg.ChatType.IsGroupOrChannel() {
+		// Slash commands always trigger response
+		if strings.HasPrefix(msg.Text, "/") {
+			return true
+		}
+
+		// Mentions always trigger response
+		if msg.IsMentioningBot {
+			return true
+		}
+
+		// Direct replies always trigger response
+		if msg.IsReplyToBot {
+			return true
+		}
+
+		// Otherwise ignore in groups
+		return false
+	}
+
+	// Unknown chat type - default to responding (fail-open for safety)
+	return true
 }

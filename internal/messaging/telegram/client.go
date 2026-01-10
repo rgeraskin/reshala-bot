@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -112,7 +113,7 @@ func (c *Client) Start(handler messaging.MessageHandler) error {
 			continue
 		}
 
-		msg := convertMessage(update.Message)
+		msg := convertMessage(update.Message, c.bot.Self.UserName)
 		if err := handler(msg); err != nil {
 			slog.Error("Error handling message", "error", err)
 		}
@@ -127,12 +128,18 @@ func (c *Client) Stop() {
 	c.bot.StopReceivingUpdates()
 }
 
-func convertMessage(tgMsg *tgbotapi.Message) *messaging.IncomingMessage {
+func convertMessage(tgMsg *tgbotapi.Message, botUsername string) *messaging.IncomingMessage {
 	msg := &messaging.IncomingMessage{
 		ChatID:    strconv.FormatInt(tgMsg.Chat.ID, 10),
 		MessageID: strconv.Itoa(tgMsg.MessageID),
 		Text:      tgMsg.Text,
 		Timestamp: time.Unix(int64(tgMsg.Date), 0),
+
+		// Filtering metadata
+		ChatType:         convertChatType(tgMsg.Chat.Type),
+		IsMentioningBot:  detectBotMention(tgMsg, botUsername),
+		IsReplyToBot:     detectReplyToBot(tgMsg, botUsername),
+		ReplyToMessageID: getReplyToMessageID(tgMsg),
 	}
 
 	// From can be nil for channel posts or forwarded messages without sender
@@ -146,6 +153,87 @@ func convertMessage(tgMsg *tgbotapi.Message) *messaging.IncomingMessage {
 	}
 
 	return msg
+}
+
+// detectBotMention checks if the message contains an @mention of the bot.
+func detectBotMention(tgMsg *tgbotapi.Message, botUsername string) bool {
+	if tgMsg.Entities == nil || botUsername == "" {
+		return false
+	}
+
+	for _, entity := range tgMsg.Entities {
+		if entity.Type == "mention" {
+			mention := extractEntityText(tgMsg.Text, entity)
+			// Compare case-insensitively (Telegram usernames are case-insensitive)
+			if strings.EqualFold(mention, "@"+botUsername) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// extractEntityText extracts the text for a Telegram entity, handling UTF-16 offset conversion.
+// Telegram uses UTF-16 code units for offsets, while Go strings are UTF-8.
+func extractEntityText(text string, entity tgbotapi.MessageEntity) string {
+	// Convert UTF-16 offsets to byte offsets
+	byteStart := utf16OffsetToByteOffset(text, entity.Offset)
+	byteEnd := utf16OffsetToByteOffset(text, entity.Offset+entity.Length)
+
+	if byteStart < 0 || byteEnd > len(text) || byteStart > byteEnd {
+		return ""
+	}
+
+	return text[byteStart:byteEnd]
+}
+
+// utf16OffsetToByteOffset converts a UTF-16 code unit offset to a byte offset in a UTF-8 string.
+// Telegram uses UTF-16 code units for entity offsets:
+// - BMP characters (U+0000 to U+FFFF): 1 UTF-16 unit = 1-3 UTF-8 bytes
+// - Non-BMP characters (emoji, etc.): 2 UTF-16 units = 4 UTF-8 bytes (surrogate pair)
+func utf16OffsetToByteOffset(text string, utf16Offset int) int {
+	utf16Pos := 0
+	bytePos := 0
+
+	for _, r := range text {
+		if utf16Pos >= utf16Offset {
+			break
+		}
+
+		// Characters outside BMP use surrogate pairs (2 UTF-16 units)
+		if r > 0xFFFF {
+			utf16Pos += 2
+		} else {
+			utf16Pos += 1
+		}
+
+		bytePos += len(string(r))
+	}
+
+	return bytePos
+}
+
+// detectReplyToBot checks if the message is a direct reply to a bot message.
+func detectReplyToBot(tgMsg *tgbotapi.Message, botUsername string) bool {
+	if tgMsg.ReplyToMessage == nil || botUsername == "" {
+		return false
+	}
+
+	// Check if the original message was from the bot
+	if tgMsg.ReplyToMessage.From != nil {
+		return strings.EqualFold(tgMsg.ReplyToMessage.From.UserName, botUsername)
+	}
+
+	return false
+}
+
+// getReplyToMessageID returns the message ID being replied to, or empty string if not a reply.
+func getReplyToMessageID(tgMsg *tgbotapi.Message) string {
+	if tgMsg.ReplyToMessage != nil {
+		return strconv.Itoa(tgMsg.ReplyToMessage.MessageID)
+	}
+	return ""
 }
 
 func convertChatType(tgType string) messaging.ChatType {
